@@ -29,7 +29,6 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     name: windows-2022-release
     runs-on: windows-2022
-    timeout-minutes: 30
 
     concurrency:
       group: rubikotc-${{ github.workflow }}-${{ github.ref }}
