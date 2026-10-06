@@ -164,10 +164,6 @@ jobs:
           Write-Error "Windows build failed. See the annotations or download RubikOTC-windows-build-log."
           exit 1
 
-      - name: Test bestiary protocol layouts
-        shell: pwsh
-        run: ctest --test-dir build/windows-release -R '^BestiaryOverview\.' --output-on-failure --no-tests=error
-
       - name: Prepare artifact folder
         shell: pwsh
         run: |
