@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 env:
-  CMAKE_BUILD_PARALLEL_LEVEL: 2
-  MAKEFLAGS: "-j 2"
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  MAKEFLAGS: "-j 4"
   # Keep compiled vcpkg packages in a normal filesystem cache. This avoids the
   # unavailable x-gha runtime token and lets failed runs reuse dependencies.
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite"
@@ -122,7 +122,7 @@ jobs:
           $log = "$env:GITHUB_WORKSPACE\windows-build.log"
           cmake --preset windows-release *>&1 | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build --preset windows-release *>&1 | Tee-Object -FilePath $log -Append
+          cmake --build --preset windows-release --target otclient --parallel 4 *>&1 | Tee-Object -FilePath $log -Append
           exit $LASTEXITCODE
 
       - name: Save completed vcpkg work
@@ -193,22 +193,6 @@ jobs:
 
           Copy-Item $exePath.FullName -Destination "$artifactDir\RubikOTC.exe"
 
-          $dlls = Get-ChildItem -Path $exePath.Directory.FullName -Filter "*.dll"
-          foreach ($dll in $dlls) {
-            Copy-Item $dll.FullName -Destination $artifactDir
-          }
-
-          # Match the upstream binary-only artifact. ILK is optional: it only
-          # exists for incremental links and is not required to run the client.
-          foreach ($extension in @('pdb', 'ilk')) {
-            $symbol = Join-Path $exePath.Directory.FullName "otclient.$extension"
-            if (Test-Path -LiteralPath $symbol) {
-              Copy-Item -LiteralPath $symbol -Destination $artifactDir
-            } elseif ($extension -eq 'pdb') {
-              throw 'Matching otclient.pdb not found beside the executable.'
-            }
-          }
-
       - name: Prepare optional runtime package
         if: ${{ inputs.include_runtime }}
         shell: pwsh
@@ -253,6 +237,7 @@ jobs:
           path: ${{ github.workspace }}/artifacts
 
   variants:
+    if: ${{ false }}
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -432,7 +417,7 @@ jobs:
   release:
     name: Publish "latest" release
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    needs: [build, variants]
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -471,7 +456,7 @@ jobs:
           title="Latest build ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})"
           notes="Automatic build of the latest \`main\` commit ${GITHUB_SHA::7}.
 
-          Binary-only update: executable, matching debug symbols and any required DLLs. Install into an existing RubikOTC client with init.lua, data, modules and mods. Game assets remain separate. For a fresh installation, the optional runtime package can be generated with workflow_dispatch (include_runtime)."
+          Executable-only update: RubikOTC.exe. Install it into an existing RubikOTC client with init.lua, data, modules and mods. Game assets remain separate. For a fresh installation, the optional runtime package can be generated with workflow_dispatch (include_runtime)."
           if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit latest -R "$GITHUB_REPOSITORY" --prerelease --title "$title" --notes "$notes"
           else
