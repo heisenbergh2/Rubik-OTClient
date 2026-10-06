@@ -1,0 +1,63 @@
+# RubikOTC platform builds
+
+The main client is RubikOTC. The new workflows build its own source and
+runtime modules; they do not substitute executables from another fork.
+
+## Outputs and requirements
+
+| Target | Output | Runtime requirement / validation still needed |
+| --- | --- | --- |
+| Windows | `RubikOTC-windows-release` (binary + symbols) | Install over matching RubikOTC runtime files; optional `include_runtime` manual input uploads those separately |
+| Windows Server | Existing full-package workflow | Modern Windows Server with GUI and a suitable OpenGL driver; test the target machine/RDP session |
+| Linux x64 | `RubikOTC-linux-release` | Ubuntu 24.04-compatible environment; OpenGL, GLEW, X11 and audio system libraries |
+| macOS arm64 | `RubikOTC-macos-release` | XQuartz: RubikOTC currently uses X11/OpenGL, not RubikOTC's Cocoa/Metal backend |
+| Android | `RubikOTC-android-release` | Four ABIs from Gradle; development-signed APK, not a store release |
+| Browser (build currently blocked) | Intended: `RubikOTC-browser-release` | Lua WebAssembly library integration remains unresolved; subsequently requires COOP/COEP and WebSocket-compatible game transport |
+
+The workflow configuration is not proof of a working runtime. Confirm successful
+compilation and test startup, login, UI, sound and gameplay on each target.
+Linux/macOS packages include loose tracked runtime files. Large `data/things`
+assets excluded from Git must be supplied separately. The macOS package is not
+notarized and currently requires XQuartz, rather than being a self-contained app.
+Android CI creates a development signing key when absent; APKs signed by different
+runs may require uninstalling the previous test APK. Do not use these keys for a
+production release.
+
+For browser testing, the repository provides `tools/emscripten-web-serve.py`.
+Opening the HTML using `file://` is insufficient. Browser TCP restrictions cannot
+be fixed by compiling an existing native client to WebAssembly.
+
+## Caches
+
+Separate Linux/macOS/browser entry workflows call `build-platforms.yml`, which
+saves vcpkg binary packages and downloads,
+plus ccache compiler objects. Android saves these, Gradle dependencies/build
+cache, and the LuaJIT libraries for all four ABIs. Emscripten is pinned to 6.0.9
+and cached separately. Dependency/compiler saves run even after compilation
+fails, preserving packages successfully built before the failure.
+
+These ccache builds disable precompiled headers, avoiding a PCH configuration
+that ccache cannot reuse without relaxed timestamp/macro checks. Windows uses
+sccache. Windows and Windows Server share compatible vcpkg binary archives;
+their compiler settings still determine which objects can be reused.
+When precompilation is disabled, CMake still includes the common `pch.h` as an
+ordinary header: legacy source files depend on its declarations. Emscripten
+toolchain snapshots are also saved after a failed client compilation.
+
+Keys separate operating systems and target architectures. vcpkg additionally
+checks package ABI hashes; ccache checks source/compiler/options. Compiler caches
+get new snapshots; complete platform dependency caches use stable keys, while
+failed builds save partial snapshots for later reuse.
+GitHub cache eviction and compiler/dependency changes can cause another cold
+build. Cross-repository cache reuse is not configured; ordinary Actions caches
+belong to their repository. Windows objects cannot be linked into the other
+platforms. CI logs include compiler-cache statistics for checking actual reuse.
+
+## Sources
+
+- RubikOTC `cc9298b0`: persistent vcpkg cache approach and exact executable packaging.
+- OpenTibiaBR/otclient `dd5641492`: missing browser overlay patches and reference builds.
+- Android failure `JV-071/RubikOTC/actions/runs/34008018231`: forcing system
+  binaries made vcpkg use an incompatible CMake for `STRING_ENCODE`.
+- Browser failure `JV-071/RubikOTC/actions/runs/34008018237`: missing protobuf
+  patch; RubikOTC also excluded all `*.patch` files via `.gitignore`.

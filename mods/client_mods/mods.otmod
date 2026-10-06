@@ -1,0 +1,13 @@
+Module
+  name: client_mods
+  description: Mod loader
+  author: OTClient Team
+  website: https://github.com/Jattartajjar/RubikOTC
+  sandboxed: true
+  load-later:
+    - game_buttons
+    - game_itemselector
+    - client_textedit
+    - game_memorial
+    - game_bot
+    - game_search_locker

@@ -1,0 +1,9 @@
+Module
+  name: game_tasks
+  description: Tasks window
+  author: Marcosvf132
+  website: https://deusot.com/
+  sandboxed: true
+  scripts: [ tasks ]
+  @onLoad: init()
+  @onUnload: terminate()

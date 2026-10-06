@@ -1,0 +1,820 @@
+setDefaultTab("Main")
+local panelName = "newHealer"
+local ui = setupUI([[
+Panel
+  height: 19
+
+  BotSwitch
+    id: title
+    anchors.top: parent.top
+    anchors.left: parent.left
+    text-align: center
+    width: 130
+    !text: tr('Friend Healer')
+
+  Button
+    id: edit
+    anchors.top: prev.top
+    anchors.left: prev.right
+    anchors.right: parent.right
+    margin-left: 3
+    height: 17
+    text: Setup
+
+]])
+ui:setId(panelName)
+
+-- validate current settings
+if not storage[panelName] or not storage[panelName].priorities then
+    storage[panelName] = nil
+end
+
+-- Forçar recriação se ainda tiver Mana Item (versão antiga)
+if storage[panelName] and storage[panelName].priorities then
+    for i, priority in ipairs(storage[panelName].priorities) do
+        if priority.name == "Mana Item" then
+            storage[panelName] = nil  -- Forçar recriação sem Mana Item
+            break
+        end
+    end
+end
+
+if not storage[panelName] then
+    storage[panelName] = {
+        enabled = false,
+        customPlayers = {},
+        vocations = {},
+        groups = {},
+        priorities = {
+
+            {name="Custom Spell",           enabled=false, custom=true},
+            {name="Exura Gran Sio",         enabled=true, strong = true},
+            {name="Exura Sio",              enabled=true, normal = true},
+            {name="Exura Gran Mas Res",     enabled=true, area = true},
+            {name="Health Item",            enabled=true, health=true},
+            -- {name="Mana Item",              enabled=true, mana=true}  -- DESABILITADO: OTC não permite ver mana de outros players
+
+        },
+        settings = {
+
+            -- {type="HealItem",       text="Mana Item ",                   value=268},  -- DESABILITADO: OTC não permite ver mana de outros players
+            {type="HealScroll",     text="Item Range: ",                 value=6},
+            {type="HealItem",       text="Health Item ",                 value=3160},
+            {type="HealScroll",     text="Mas Res Players: ",            value=2},
+            {type="HealScroll",     text="Heal Friend at: ",             value=80},
+            {type="HealScroll",     text="Use Gran Sio at: ",            value=30},
+            {type="HealScroll",     text="Min Player HP%: ",             value=90},
+            {type="HealScroll",     text="Min Player MP%: ",             value=30},
+
+        },
+        conditions = {
+            knights = true,
+            paladins = true,
+            druids = false,
+            sorcerers = false,
+            party = true,
+            guild = false,
+            friends = false,
+            customPlayers = true
+        }
+    }
+end
+
+local config = storage[panelName]
+local healerWindow = UI.createWindow('FriendHealer')
+healerWindow:hide()
+healerWindow:setId(panelName)
+
+ui.title:setOn(config.enabled)
+ui.title.onClick = function(widget)
+    config.enabled = not config.enabled
+    widget:setOn(config.enabled)
+end
+
+ui.edit.onClick = function()
+    healerWindow:show()
+    healerWindow:raise()
+    healerWindow:focus()
+end
+
+local conditions = healerWindow.conditions
+local targetSettings = healerWindow.targetSettings
+local customList = healerWindow.customList
+local priority = healerWindow.priority
+
+-- customList
+-- create entries on the list
+for name, health in pairs(config.customPlayers) do
+    local widget = UI.createWidget("HealerPlayerEntry", customList.playerList.list)
+    widget.remove.onClick = function()
+        config.customPlayers[name] = nil
+        widget:destroy()
+    end
+    widget:setText("["..health.."%]  "..name)
+end
+
+customList.playerList.onDoubleClick = function()
+    customList.playerList:hide()
+end
+
+local function clearFields()
+    customList.addPanel.name:setText("friend name")
+    customList.addPanel.health:setText("1")
+    customList.playerList:show()
+end
+
+local function capitalFistLetter(str)
+    return (string.gsub(str, "^%l", string.upper))
+  end
+
+customList.addPanel.add.onClick = function()
+    local name = ""
+    local words = string.split(customList.addPanel.name:getText(), " ")
+    local health = tonumber(customList.addPanel.health:getText())
+    for i, word in ipairs(words) do
+      name = name .. " " .. capitalFistLetter(word)
+    end
+
+    if not health then
+        clearFields()
+        return warn("[Friend Healer] Please enter health percent value!")
+    end
+
+    if name:len() == 0 or name:lower() == "friend name" then
+        clearFields()
+        return warn("[Friend Healer] Please enter friend name to be added!")
+    end
+
+    if config.customPlayers[name] or config.customPlayers[name:lower()] then
+        clearFields()
+        return warn("[Friend Healer] Player already added to custom list.")
+    else
+        config.customPlayers[name] = health
+        local widget = UI.createWidget("HealerPlayerEntry", customList.playerList.list)
+        widget.remove.onClick = function()
+            config.customPlayers[name] = nil
+            widget:destroy()
+        end
+        widget:setText("["..health.."%]  "..name)
+    end
+
+    clearFields()
+end
+
+local function validate(widget, category)
+    local list = widget:getParent()
+    local label = list:getParent().title
+    -- 1 - priorities | 2 - vocation
+    category = category or 0
+
+    if category == 2 and not storage.extras.checkPlayer then
+        label:setColor("#d9321f")
+        label:setTooltip("! WARNING ! \nTurn on check players in extras to use this feature!")
+        return
+    else
+        label:setColor("#dfdfdf")
+        label:setTooltip("")
+    end
+
+    local checked = false
+    for i, child in ipairs(list:getChildren()) do
+        if category == 1 and child.enabled:isChecked() or child:isChecked() then
+            checked = true
+        end
+    end
+
+    if not checked then
+        label:setColor("#d9321f")
+        label:setTooltip("! WARNING ! \nNo category selected!")
+    else
+        label:setColor("#dfdfdf")
+        label:setTooltip("")
+    end
+end
+-- targetSettings
+targetSettings.vocations.box.knights:setChecked(config.conditions.knights)
+targetSettings.vocations.box.knights.onClick = function(widget)
+    config.conditions.knights = not config.conditions.knights
+    widget:setChecked(config.conditions.knights)
+    validate(widget, 2)
+end
+
+targetSettings.vocations.box.paladins:setChecked(config.conditions.paladins)
+targetSettings.vocations.box.paladins.onClick = function(widget)
+    config.conditions.paladins = not config.conditions.paladins
+    widget:setChecked(config.conditions.paladins)
+    validate(widget, 2)
+end
+
+targetSettings.vocations.box.druids:setChecked(config.conditions.druids)
+targetSettings.vocations.box.druids.onClick = function(widget)
+    config.conditions.druids = not config.conditions.druids
+    widget:setChecked(config.conditions.druids)
+    validate(widget, 2)
+end
+
+targetSettings.vocations.box.sorcerers:setChecked(config.conditions.sorcerers)
+targetSettings.vocations.box.sorcerers.onClick = function(widget)
+    config.conditions.sorcerers = not config.conditions.sorcerers
+    widget:setChecked(config.conditions.sorcerers)
+    validate(widget, 2)
+end
+
+targetSettings.groups.box.friends:setChecked(config.conditions.friends)
+targetSettings.groups.box.friends.onClick = function(widget)
+    config.conditions.friends = not config.conditions.friends
+    widget:setChecked(config.conditions.friends)
+    validate(widget)
+end
+
+targetSettings.groups.box.party:setChecked(config.conditions.party)
+targetSettings.groups.box.party.onClick = function(widget)
+    config.conditions.party = not config.conditions.party
+    widget:setChecked(config.conditions.party)
+    validate(widget)
+end
+
+targetSettings.groups.box.guild:setChecked(config.conditions.guild)
+targetSettings.groups.box.guild.onClick = function(widget)
+    config.conditions.guild = not config.conditions.guild
+    widget:setChecked(config.conditions.guild)
+    validate(widget)
+end
+
+-- Adicionar checkbox para Custom Players
+if targetSettings.groups.box.customPlayers then
+    targetSettings.groups.box.customPlayers:setChecked(config.conditions.customPlayers)
+    targetSettings.groups.box.customPlayers.onClick = function(widget)
+        config.conditions.customPlayers = not config.conditions.customPlayers
+        widget:setChecked(config.conditions.customPlayers)
+        validate(widget)
+    end
+end
+targetSettings.groups.box.botserver:hide()
+--targetSettings.groups.box.botserver:setChecked(config.conditions.botserver)
+--targetSettings.groups.box.botserver.onClick = function(widget)
+--    config.conditions.botserver = not config.conditions.botserver
+--    widget:setChecked(config.conditions.botserver)
+--    validate(widget)
+--end
+
+validate(targetSettings.vocations.box.knights)
+validate(targetSettings.groups.box.friends)
+validate(targetSettings.vocations.box.sorcerers, 2)
+
+-- conditions
+for i, setting in ipairs(config.settings) do
+    local widget = UI.createWidget(setting.type, conditions.box)
+    local text = setting.text
+    local val = setting.value
+    widget.text:setText(text)
+
+    if setting.type == "HealScroll" then
+        widget.text:setText(widget.text:getText()..val)
+        if not (text:find("Range") or text:find("Mas Res")) then
+            widget.text:setText(widget.text:getText().."%")
+        end
+        widget.scroll:setValue(val)
+        widget.scroll.onValueChange = function(scroll, value)
+            setting.value = value
+            widget.text:setText(text..value)
+            if not (text:find("Range") or text:find("Mas Res")) then
+                widget.text:setText(widget.text:getText().."%")
+            end
+        end
+        if text:find("Range") or text:find("Mas Res") then
+            widget.scroll:setMaximum(10)
+        end
+    else
+        widget.item:setItemId(val)
+        widget.item:setShowCount(false)
+        widget.item.onItemChange = function(widget)
+            setting.value = widget:getItemId()
+        end
+    end
+end
+
+-- priority and toggles
+local function setCrementalButtons()
+    for i, child in ipairs(priority.list:getChildren()) do
+        if i == 1 then
+            child.increment:disable()
+        elseif i == 6 then
+            child.decrement:disable()
+        else
+            child.increment:enable()
+            child.decrement:enable()
+        end
+    end
+end
+
+for i, action in ipairs(config.priorities) do
+    local widget = UI.createWidget("PriorityEntry", priority.list)
+
+    widget:setText(action.name)
+    widget.increment.onClick = function()
+        local index = priority.list:getChildIndex(widget)
+        local table = config.priorities
+
+        priority.list:moveChildToIndex(widget, index-1)
+        table[index], table[index-1] = table[index-1], table[index]
+        setCrementalButtons()
+    end
+    widget.decrement.onClick = function()
+        local index = priority.list:getChildIndex(widget)
+        local table = config.priorities
+
+        priority.list:moveChildToIndex(widget, index+1)
+        table[index], table[index+1] = table[index+1], table[index]
+        setCrementalButtons()
+    end
+    widget.enabled:setChecked(action.enabled)
+    widget:setColor(action.enabled and "#98BF64" or "#dfdfdf")
+    widget.enabled.onClick = function()
+        action.enabled = not action.enabled
+        widget:setColor(action.enabled and "#98BF64" or "#dfdfdf")
+        widget.enabled:setChecked(action.enabled)
+        validate(widget, 1)
+    end
+    if action.custom then
+        widget.onDoubleClick = function()
+            local window = modules.client_textedit.show(widget, {title = "Custom Spell", description = "Enter below formula for a custom healing spell"})
+            schedule(50, function()
+              window:raise()
+              window:focus()
+            end)
+        end
+        widget.onTextChange = function(widget,text)
+            action.name = text
+        end
+        widget:setTooltip("Double click to set spell formula.")
+    end
+
+    if i == #config.priorities then
+        validate(widget, 1)
+        setCrementalButtons()
+    end
+end
+
+-- =====================================================
+-- SISTEMA VIP GROUPS CORRIGIDO PARA CANARY SERVER
+-- =====================================================
+
+-- Função para verificar se player é friend no VIP Group "Friends" (group_id = 2)
+local function isVipFriend(spec)
+    if not spec then return false end
+    
+    local name = spec:getName()
+    if not name then return false end
+    
+    -- MÉTODO 1: Verificar VIP list do cliente OTC
+    -- No cliente OTC, quando um player é marcado como "friend" (ícone verde),
+    -- ele aparece na VIP list com informações específicas
+    
+    local localPlayer = g_game.getLocalPlayer()
+    if not localPlayer then return false end
+    
+    -- Verificar se player está na VIP list
+    for id, vip in pairs(g_game.getVips()) do
+        if vip[1] == name then
+            -- No sistema Canary/OTC moderno, friends podem ser identificados por:
+            -- 1. Ícone específico (vip[3] ou outro índice)
+            -- 2. Status especial
+            -- 3. Grupo VIP específico
+            
+            -- Verificar diferentes possibilidades de identificação de friend
+            local icon = tonumber(vip[3]) or 0
+            local status = tonumber(vip[2]) or 0
+            
+            -- Friends geralmente têm ícone > 0 ou status específico
+            -- Ajustar conforme necessário baseado nos testes
+            if icon > 0 or status == 2 then
+                return true
+            end
+            
+            -- FALLBACK: Se está na VIP list e não é enemy, considerar friend
+            -- (pode ser ajustado conforme necessário)
+            return true
+        end
+    end
+    
+    return false
+end
+
+-- Função melhorada para verificar guild members (inclui allies)
+local function isGuildMember(spec)
+    if not spec then return false end
+    
+    local emblem = spec:getEmblem()
+    if not emblem then return false end
+    
+    -- 1 = same guild, 3 = ally guild
+    return emblem == 1 or emblem == 3
+end
+
+local lastItemUse = now
+local lastStrongHeal = 0
+local lastMasRes = 0
+local lastSio = 0
+local function friendHealerAction(spec, targetsInRange)
+    local name = spec:getName()
+    local health = spec:getHealthPercent()
+    local mana = spec:getManaPercent()
+    local dist = distanceFromPlayer(spec:getPosition())
+    targetsInRange = targetsInRange or 0
+
+    local itemRange = config.settings[1].value      -- Item Range
+    local healItem = config.settings[2].value       -- Health Item
+    local masResAmount = config.settings[3].value   -- Mas Res Players
+    local normalHeal = config.customPlayers[name] or config.settings[4].value  -- Heal Friend at
+    local strongHeal = config.customPlayers[name] and normalHeal/2 or config.settings[5].value  -- Use Gran Sio at
+    -- manaItem removido - não funciona no OTC
+
+    for i, action in ipairs(config.priorities) do
+        if action.enabled then
+            -- LÓGICA MELHORADA DO EXURA GRAN MAS RES (baseada no vBot Vithrax)
+            if action.area and now > lastMasRes then
+                -- Contar quantos players válidos precisam de cura em range 3 sqm
+                local friendsNeedingHeal = 0
+                local myHP = player:getHealthPercent()
+                
+                -- Se EU preciso de cura, contar como 1
+                if myHP <= normalHeal then
+                    friendsNeedingHeal = friendsNeedingHeal + 1
+                end
+                
+                -- Obter spectators usando a função correta do OTC
+                local allSpectators = getSpectators(posz())
+                
+                -- Contar outros players que precisam de cura
+                for _, otherSpec in ipairs(allSpectators) do
+                    if otherSpec ~= player and otherSpec ~= spec and otherSpec:isPlayer() then
+                        local otherDist = distanceFromPlayer(otherSpec:getPosition())
+                        if otherDist <= 3 then
+                            local otherHealth = otherSpec:getHealthPercent()
+                            -- Verificar se é um candidato válido usando a mesma lógica do isCandidate
+                            local otherShieldId = otherSpec:getShield()
+                            local otherIsPartyMemberBasic = otherSpec:isPartyMember()
+                            local myShield = player:getShield()
+                            
+                            local otherIsInActiveParty = false
+                            if otherIsPartyMemberBasic and otherShieldId > 0 and otherShieldId <= 10 then
+                                if myShield > 0 and myShield <= 10 then
+                                    otherIsInActiveParty = true
+                                end
+                            end
+                            
+                            local otherOkParty = config.conditions.party and otherIsInActiveParty
+                            local otherOkFriend = config.conditions.friends and isVipFriend(otherSpec)
+                            local otherOkGuild = config.conditions.guild and (otherSpec:getEmblem() == 4 or otherSpec:getEmblem() == 1)
+                            
+                            -- Se é um candidato válido e precisa de cura
+                            if (otherOkParty or otherOkFriend or otherOkGuild) and otherHealth <= normalHeal then
+                                friendsNeedingHeal = friendsNeedingHeal + 1
+                            end
+                        end
+                    end
+                end
+                
+                -- Contar o target atual se precisa de cura
+                if health <= normalHeal and dist <= 3 then
+                    friendsNeedingHeal = friendsNeedingHeal + 1
+                end
+                
+                -- Só usar se tiver pelo menos masResAmount players precisando de cura
+                if friendsNeedingHeal >= masResAmount then
+                    lastMasRes = now + 2000
+                end
+            end
+            -- MANA ITEM DESABILITADO - OTC não permite ver mana de outros players
+            -- if action.mana and g_game.findPlayerItem(manaItem, -1) and mana <= 20 and dist <= itemRange and now - lastItemUse > 1000 then
+            --     lastItemUse = now
+            --     local item = g_game.findPlayerItem(manaItem, -1)
+            --     if item then
+            --         print("[Friend Healer] Using mana item on " .. name .. " (MP: " .. mana .. "% <= 20%)")
+            --         return g_game.useWith(item, spec)
+            --     end
+            -- end
+            if action.health and g_game.findPlayerItem(healItem, -1) and health <= normalHeal and dist <= itemRange and now - lastItemUse > 1000 then
+                lastItemUse = now
+                local item = g_game.findPlayerItem(healItem, -1)
+                if item then
+                    return g_game.useWith(item, spec)
+                end
+            end
+            if action.strong and health <= strongHeal and now > lastStrongHeal then
+                lastStrongHeal = now + 60000
+                return say('exura gran sio "'..name)
+            end
+            if (action.normal or action.custom) and health <= normalHeal and now > lastSio then
+                lastSio = lastSio + 1000
+                return say('exura sio "'..name)
+            end
+        end
+    end
+end
+
+local function isCandidate(spec)
+    if spec:isLocalPlayer() or not spec:isPlayer() then
+        return nil
+    end
+    if not spec:canShoot() then
+        return false
+    end
+
+    local name = spec:getName()
+    local curHp = spec:getHealthPercent()
+    
+    -- Verificar se HP está dentro dos limites (LÓGICA ORIGINAL)
+    if curHp == 100 or (config.customPlayers[name] and curHp > config.customPlayers[name]) then
+        return false
+    end
+
+    local specText = spec:getText()
+    
+    -- Verificar vocações SEMPRE que há restrições (LÓGICA CORRIGIDA + TESTE GETVOCATION)
+    local hasVocationRestrictions = not (config.conditions.knights and config.conditions.paladins and 
+                                        config.conditions.druids and config.conditions.sorcerers)
+    
+    if hasVocationRestrictions then
+        local vocationDetected = false
+        local isKnight, isPaladin, isDruid, isSorcerer = false, false, false, false
+        local vocationId = nil
+        
+        -- TENTATIVA 1: Se é player, tentar getVocation() diretamente
+        if spec:isPlayer() then
+            local success, voc = pcall(function() return spec:getVocation() end)
+            if success and voc then
+                vocationId = voc
+                -- IDs baseados no Tibia padrão: 1=EK, 2=RP, 3=MS, 4=ED (+ promoted +10)
+                isKnight = (voc == 1 or voc == 11)
+                isPaladin = (voc == 2 or voc == 12)
+                isSorcerer = (voc == 3 or voc == 13)
+                isDruid = (voc == 4 or voc == 14)
+                vocationDetected = true
+            end
+        end
+        
+        -- TENTATIVA 2: Se getVocation falhou, verificar por texto
+        if not vocationDetected and specText and specText:len() > 0 then
+            isKnight = specText:find("EK") ~= nil
+            isPaladin = specText:find("RP") ~= nil
+            isDruid = specText:find("ED") ~= nil
+            isSorcerer = specText:find("MS") ~= nil
+            vocationDetected = isKnight or isPaladin or isDruid or isSorcerer
+        end
+        
+        -- APLICAR LÓGICA DE VOCAÇÃO
+        if vocationDetected then
+            -- Se detectou vocação específica E essa vocação está desmarcada, rejeitar
+            if (isKnight and not config.conditions.knights) or
+               (isPaladin and not config.conditions.paladins) or
+               (isDruid and not config.conditions.druids) or
+               (isSorcerer and not config.conditions.sorcerers) then
+               -- Exceção: se está na custom list E custom players está habilitado, permitir
+               if not (config.customPlayers[name] and config.conditions.customPlayers) then
+                   return nil
+               end
+            end
+        else
+            -- Se NÃO conseguiu detectar vocação E há restrições, aplicar lógica restritiva
+            -- Só permite se está na custom list
+            local isCustomPlayer = config.customPlayers[name] and config.conditions.customPlayers
+            
+            if not isCustomPlayer then
+                return nil -- Rejeita se não pode confirmar vocação e há restrições
+            end
+        end
+    end
+
+    -- VERIFICAÇÕES PRINCIPAIS (BASEADAS NAS DEFINIÇÕES DO CANARY)
+    -- Party: Verificação robusta combinando múltiplos métodos
+    local shieldId = spec:getShield()
+    local isPartyMemberBasic = spec:isPartyMember()
+    
+    -- Verificação robusta: player deve ter shield de party E ser party member
+    -- Shield 0 = sem party, 1-10 = party ativa
+    local isInActiveParty = false
+    if isPartyMemberBasic and shieldId > 0 and shieldId <= 10 then
+        -- Verificação adicional: o próprio player também deve estar em party
+        local myShield = player:getShield()
+        if myShield > 0 and myShield <= 10 then
+            isInActiveParty = true
+        end
+    end
+    
+    local okParty = config.conditions.party and isInActiveParty
+    local okFriend = config.conditions.friends and isVipFriend(spec)
+    -- CANARY: GUILDEMBLEM_MEMBER = 4, GUILDEMBLEM_ALLY = 1
+    local okGuild = config.conditions.guild and (spec:getEmblem() == 4 or spec:getEmblem() == 1)
+    local okCustom = config.conditions.customPlayers and config.customPlayers[name] ~= nil
+
+    -- DEBUG: Log detalhado para identificar problemas
+    if config.conditions.friends or config.conditions.guild or okCustom or config.conditions.party then
+        -- print("[Friend Healer DEBUG] Player: " .. name)
+        -- print("  - HP: " .. curHp .. "%")
+        -- print("  - MP: " .. (spec:getManaPercent() or 0) .. "%")  -- NOVO: Mostrar mana
+        
+        -- DEBUG VOCATIONS (MELHORADO - MOSTRA TENTATIVA GETVOCATION)
+        local vocationDetected = false
+        local isKnight, isPaladin, isDruid, isSorcerer = false, false, false, false
+        local detectionMethod = "none"
+        local vocationId = nil
+        local hasVocationRestrictions = not (config.conditions.knights and config.conditions.paladins and 
+                                            config.conditions.druids and config.conditions.sorcerers)
+        
+        -- Verificar se é player e tentar getVocation
+        if spec:isPlayer() then
+            local success, voc = pcall(function() return spec:getVocation() end)
+            if success and voc then
+                vocationId = voc
+                isKnight = (voc == 1 or voc == 11)
+                isPaladin = (voc == 2 or voc == 12)
+                isSorcerer = (voc == 3 or voc == 13)
+                isDruid = (voc == 4 or voc == 14)
+                vocationDetected = true
+                detectionMethod = "getVocation() ID: " .. voc
+            else
+                detectionMethod = "getVocation() failed"
+            end
+        else
+            detectionMethod = "not a player"
+        end
+        
+        -- Verificar por texto se getVocation falhou
+        if not vocationDetected and specText and specText:len() > 0 then
+            isKnight = specText:find("EK") ~= nil
+            isPaladin = specText:find("RP") ~= nil
+            isDruid = specText:find("ED") ~= nil
+            isSorcerer = specText:find("MS") ~= nil
+            vocationDetected = isKnight or isPaladin or isDruid or isSorcerer
+            if vocationDetected then 
+                detectionMethod = detectionMethod .. " + text" 
+            else
+                detectionMethod = detectionMethod .. " + text (no vocation found)"
+            end
+        elseif not vocationDetected then
+            detectionMethod = detectionMethod .. " + text empty"
+        end
+        
+        local vocationName = "Unknown"
+        if isKnight then vocationName = "Knight (EK)"
+        elseif isPaladin then vocationName = "Paladin (RP)"
+        elseif isSorcerer then vocationName = "Sorcerer (MS)"
+        elseif isDruid then vocationName = "Druid (ED)"
+        end
+        
+        -- print("  - Vocations check:")
+        -- print("    - Is player: " .. tostring(spec:isPlayer()))
+        -- print("    - Text: '" .. (specText or "nil") .. "' (" .. vocationName .. ")")
+        -- print("    - Detection method: " .. detectionMethod)
+        -- print("    - Vocation detected: " .. tostring(vocationDetected))
+        -- print("    - Has restrictions: " .. tostring(hasVocationRestrictions))
+        -- print("    - Knight: " .. tostring(isKnight) .. " (enabled: " .. tostring(config.conditions.knights) .. ")")
+        -- print("    - Paladin: " .. tostring(isPaladin) .. " (enabled: " .. tostring(config.conditions.paladins) .. ")")
+        -- print("    - Druid: " .. tostring(isDruid) .. " (enabled: " .. tostring(config.conditions.druids) .. ")")
+        -- print("    - Sorcerer: " .. tostring(isSorcerer) .. " (enabled: " .. tostring(config.conditions.sorcerers) .. ")")
+        
+        if hasVocationRestrictions and not vocationDetected then
+        -- print("    - Will apply restrictive logic: REJECT (no vocation detected with restrictions)")
+        end        
+        
+        -- Verificação de party (ROBUSTA - MÚLTIPLAS VERIFICAÇÕES)
+        local shieldId = spec:getShield()
+        local isPartyMemberBasic = spec:isPartyMember()
+        local myShield = player:getShield()
+        
+        local shieldName = "None"
+        if shieldId == 1 then shieldName = "Leader"
+        elseif shieldId == 2 then shieldName = "Member" 
+        elseif shieldId >= 3 and shieldId <= 10 then shieldName = "Member+SharedExp"
+        end
+        
+        local myShieldName = "None"
+        if myShield == 1 then myShieldName = "Leader"
+        elseif myShield == 2 then myShieldName = "Member" 
+        elseif myShield >= 3 and myShield <= 10 then myShieldName = "Member+SharedExp"
+        end
+        
+        local isInActiveParty = false
+        if isPartyMemberBasic and shieldId > 0 and shieldId <= 10 then
+            if myShield > 0 and myShield <= 10 then
+                isInActiveParty = true
+            end
+        end
+        
+        -- print("  - Party enabled: " .. tostring(config.conditions.party))
+        -- print("    - Target shield: " .. shieldId .. " (" .. shieldName .. ")")
+        -- print("    - My shield: " .. myShield .. " (" .. myShieldName .. ")")
+        -- print("    - isPartyMember(): " .. tostring(isPartyMemberBasic))
+        -- print("    - In active party: " .. tostring(isInActiveParty))
+        -- print("    - okParty: " .. tostring(okParty))
+        
+        -- Debug detalhado para friends
+        -- print("  - Friends enabled: " .. tostring(config.conditions.friends))
+        
+        -- DEBUG VIP SIMPLIFICADO
+        local vipFound = false
+        local vipDetails = "not found"
+        
+        for id, vip in pairs(g_game.getVips()) do
+            if vip[1] == name then
+                vipFound = true
+                local icon = tonumber(vip[3]) or 0
+                local status = tonumber(vip[2]) or 0
+                vipDetails = string.format("status: %s, icon: %s", tostring(status), tostring(icon))
+                break
+            end
+        end
+        
+        -- print("    - In VIP list: " .. tostring(vipFound) .. " (" .. vipDetails .. ")")
+        -- print("    - isVipFriend result: " .. tostring(isVipFriend(spec)) .. " | okFriend: " .. tostring(okFriend))
+        
+        -- Verificação de guild (CANARY: MEMBER=4, ALLY=1, NEUTRAL=3, ENEMY=2)
+        local emblemValue = spec:getEmblem() or 0
+        local emblemName = "UNKNOWN"
+        if emblemValue == 0 then emblemName = "NONE"
+        elseif emblemValue == 1 then emblemName = "ALLY" 
+        elseif emblemValue == 2 then emblemName = "ENEMY"
+        elseif emblemValue == 3 then emblemName = "NEUTRAL"
+        elseif emblemValue == 4 then emblemName = "MEMBER"
+        elseif emblemValue == 5 then emblemName = "OTHER"
+        end
+        -- print("  - Guild enabled: " .. tostring(config.conditions.guild) .. " | Emblem: " .. tostring(emblemValue) .. " (" .. emblemName .. ") | Member or Ally: " .. tostring(emblemValue == 4 or emblemValue == 1) .. " | okGuild: " .. tostring(okGuild))
+        
+        -- Debug custom players DETALHADO
+        -- print("  - Custom player check:")
+        -- print("    - config.conditions.customPlayers enabled: " .. tostring(config.conditions.customPlayers))
+        -- print("    - config.customPlayers table exists: " .. tostring(config.customPlayers ~= nil))
+        if config.customPlayers then
+            local count = 0
+            for customName, customHp in pairs(config.customPlayers) do
+                count = count + 1
+        -- print("    - [" .. count .. "] '" .. customName .. "' = " .. customHp .. "% (length: " .. customName:len() .. ")")
+                if customName == name then
+        -- print("      → EXACT MATCH FOUND!")
+                end
+            end
+            if count == 0 then
+        -- print("    - Custom players list is EMPTY")
+            end
+        end
+        -- print("    - Current player: '" .. name .. "' (length: " .. name:len() .. ")")
+        -- print("    - Direct lookup result: " .. tostring(config.customPlayers[name]))
+        -- print("    - okCustom: " .. tostring(okCustom))
+    end
+
+    -- LÓGICA FINAL (BASEADA NO ORIGINAL)
+    if not (okParty or okFriend or okGuild or okCustom) then
+        if config.conditions.friends or config.conditions.guild or okCustom or config.conditions.party then
+        -- print("  - REJECTED: No valid condition met")
+        end
+        return nil
+    end
+
+    if config.conditions.friends or config.conditions.guild or okCustom or config.conditions.party then
+        -- print("  - ACCEPTED: Valid candidate found!")
+    end
+
+    -- CÁLCULO DE HEALTH (LÓGICA ORIGINAL)
+    local health = config.customPlayers[name] and curHp/2 or curHp
+    local dist = distanceFromPlayer(spec:getPosition())
+
+    return health, dist
+end
+
+macro(100, function()
+    if not config.enabled then return end
+
+    local minHp = config.settings[6].value   -- Min Player HP%
+    local minMp = config.settings[7].value   -- Min Player MP%
+
+    local healTarget = {creature=nil, hp=100}
+    local inMasResRange = 0
+
+    -- check basic
+    if hppercent() <= minHp or manapercent() <= minMp then return end
+
+    -- get all spectators
+    local spectators = getSpectators(posz())
+
+    -- main check
+    for i, spec in ipairs(spectators) do
+        local health, dist = isCandidate(spec)
+        --mas san
+        if dist then
+            inMasResRange = dist <= 3 and inMasResRange+1 or inMasResRange
+
+            -- best target
+            if health <= healTarget.hp then
+                healTarget = {creature = spec, hp = health}
+            end
+        end
+    end
+
+    -- action
+    if healTarget.creature then
+        return friendHealerAction(healTarget.creature, inMasResRange)
+    end
+end)
+

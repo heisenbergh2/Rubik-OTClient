@@ -1,0 +1,480 @@
+name: Build - Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_runtime:
+        description: Also upload data, modules and default config as a separate package
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      include_runtime:
+        description: Also upload data, modules and default config as a separate package
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  MAKEFLAGS: "-j 2"
+  # Keep compiled vcpkg packages in a normal filesystem cache. This avoids the
+  # unavailable x-gha runtime token and lets failed runs reuse dependencies.
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite"
+
+jobs:
+  build:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    name: windows-2022-release
+    runs-on: windows-2022
+
+    concurrency:
+      group: rubikotc-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Get vcpkg commit ID
+        id: vcpkg-step
+        shell: pwsh
+        run: |
+          $json = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          $commit = $json.'builtin-baseline'
+          echo "vcpkgGitCommitId=$commit" >> $env:GITHUB_OUTPUT
+
+      - name: Validate vcpkg baseline SHA
+        shell: pwsh
+        run: |
+          $SHAS = "${{ steps.vcpkg-step.outputs.vcpkgGitCommitId }}"
+          if ([string]::IsNullOrEmpty($SHAS)) {
+            echo "::error title=Missing vcpkg baseline::Provide a full 40-char vcpkgGitCommitId."
+            exit 1
+          }
+          if ($SHAS -notmatch '^[0-9a-f]{40}$') {
+            echo "::error title=Invalid vcpkg baseline::vcpkgGitCommitId must be a full 40-char commit SHA."
+            exit 1
+          }
+
+      - name: Compute vcpkg.json hash
+        id: hash
+        shell: pwsh
+        run: |
+          $json = Get-Content "vcpkg.json" -Raw -Encoding UTF8
+          $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+          $sha256 = [System.Security.Cryptography.SHA256]::Create()
+          $hashBytes = $sha256.ComputeHash($bytes)
+          $hash = [BitConverter]::ToString($hashBytes) -replace '-', ''
+          "hash=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Cache vcpkg artifacts
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg-binary-cache
+            ${{ github.workspace }}/vcpkg/downloads
+          key: vcpkg-windows-x64-static-${{ hashFiles('vcpkg.json') }}-complete-v1
+          restore-keys: |
+            vcpkg-windows-x64-static-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-windows-x64-static-
+            vcpkg-windows-release-v2-
+            vcpkg-windows-release-
+
+      - name: Compiler cache (sccache)
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          max-size: "1G"
+          variant: "sccache"
+          key: ccache-windows-release
+          restore-keys: |
+            ccache-windows-release
+
+      - name: Remove Windows pre-installed MySQL (for clean builds)
+        run: Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "C:/mysql*"
+
+      - name: Install vcpkg
+        uses: lukka/run-vcpkg@a400452f634fe49e9f18d388aeb1809dcc642136
+        with:
+          vcpkgGitCommitId: ${{ steps.vcpkg-step.outputs.vcpkgGitCommitId }}
+
+      - name: Get latest CMake and Ninja
+        uses: lukka/get-cmake@v3.31.6
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Prepare persistent vcpkg binary cache
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\.vcpkg-binary-cache" | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$env:GITHUB_WORKSPACE/.vcpkg-binary-cache" >> $env:GITHUB_ENV
+          "VCPKG_BINARY_SOURCES=clear;files,$env:GITHUB_WORKSPACE/.vcpkg-binary-cache,readwrite" >> $env:GITHUB_ENV
+
+      - name: Configure and Build
+        id: compile
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $log = "$env:GITHUB_WORKSPACE\windows-build.log"
+          cmake --preset windows-release *>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-release *>&1 | Tee-Object -FilePath $log -Append
+          exit $LASTEXITCODE
+
+      - name: Save completed vcpkg work
+        if: ${{ always() && steps.compile.outcome != 'skipped' && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg-binary-cache
+            ${{ github.workspace }}/vcpkg/downloads
+          key: vcpkg-windows-x64-static-${{ hashFiles('vcpkg.json') }}-${{ steps.compile.outcome == 'success' && 'complete-v1' || format('{0}-{1}', github.run_id, github.run_attempt) }}
+
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: RubikOTC-windows-build-log
+          path: |
+            ${{ github.workspace }}/windows-build.log
+            ${{ github.workspace }}/build/windows-release/vcpkg-manifest-install.log
+            ${{ github.workspace }}/vcpkg/buildtrees/**/*.log
+          if-no-files-found: ignore
+
+      - name: Report build failure
+        if: ${{ steps.compile.outcome == 'failure' }}
+        shell: pwsh
+        run: |
+          $log = "$env:GITHUB_WORKSPACE\windows-build.log"
+          if (Test-Path $log) {
+            $lines = @(Get-Content $log -Tail 120)
+            for ($offset = 0; $offset -lt $lines.Count; $offset += 30) {
+              $end = [Math]::Min($offset + 29, $lines.Count - 1)
+              $text = ($lines[$offset..$end] -join "`n")
+              $text = $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              $part = [int]($offset / 30) + 1
+              Write-Output "::error title=Windows build log part $part::$text"
+            }
+          }
+          Write-Error "Windows build failed. See the annotations or download RubikOTC-windows-build-log."
+          exit 1
+
+      - name: Test bestiary protocol layouts
+        shell: pwsh
+        run: ctest --test-dir build/windows-release -R '^BestiaryOverview\.' --output-on-failure --no-tests=error
+
+      - name: Prepare artifact folder
+        shell: pwsh
+        run: |
+          $artifactDir = "$env:GITHUB_WORKSPACE\artifacts"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
+          # The client target writes to the repository root when
+          # TOGGLE_BIN_FOLDER is disabled. A recursive search under build/
+          # can select otclient_*_tests.exe from vcpkg instead; that binary
+          # only runs GoogleTest and exits immediately.
+          $exeCandidates = @(
+            "$env:GITHUB_WORKSPACE\otclient.exe",
+            "$env:GITHUB_WORKSPACE\build\windows-release\bin\otclient.exe"
+          )
+          $exePath = $exeCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1 |
+            ForEach-Object { Get-Item -LiteralPath $_ }
+
+          if (-not $exePath) {
+            Write-Error "Main otclient.exe not found in the expected output locations."
+            exit 1
+          }
+
+          Copy-Item $exePath.FullName -Destination "$artifactDir\RubikOTC.exe"
+
+          $dlls = Get-ChildItem -Path $exePath.Directory.FullName -Filter "*.dll"
+          foreach ($dll in $dlls) {
+            Copy-Item $dll.FullName -Destination $artifactDir
+          }
+
+          # Match the upstream binary-only artifact. ILK is optional: it only
+          # exists for incremental links and is not required to run the client.
+          foreach ($extension in @('pdb', 'ilk')) {
+            $symbol = Join-Path $exePath.Directory.FullName "otclient.$extension"
+            if (Test-Path -LiteralPath $symbol) {
+              Copy-Item -LiteralPath $symbol -Destination $artifactDir
+            } elseif ($extension -eq 'pdb') {
+              throw 'Matching otclient.pdb not found beside the executable.'
+            }
+          }
+
+      - name: Prepare optional runtime package
+        if: ${{ inputs.include_runtime }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path runtime | Out-Null
+          foreach ($item in @('init.lua', 'config.ini', 'data', 'modules', 'mods')) {
+            if (Test-Path -LiteralPath $item) {
+              Copy-Item -LiteralPath $item -Destination runtime -Recurse -Force
+            }
+          }
+
+      - name: Validate Windows executable and runtime linkage
+        shell: pwsh
+        run: |
+          $exe = "$env:GITHUB_WORKSPACE\artifacts\RubikOTC.exe"
+          $headers = & dumpbin.exe /nologo /headers $exe
+          if ($LASTEXITCODE -ne 0 -or @($headers -match 'machine \(x64\)').Count -eq 0) {
+            throw 'Packaged executable is not a valid x64 PE image.'
+          }
+
+          $imports = & dumpbin.exe /nologo /dependents $exe
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dumpbin failed while checking executable dependencies.'
+          }
+          $dynamicRuntime = @($imports | Where-Object { $_ -match '(vcruntime|msvcp|concrt)[0-9_]*\.dll' })
+          if ($dynamicRuntime.Count -gt 0) {
+            throw "Static package unexpectedly imports the dynamic MSVC runtime: $($dynamicRuntime -join ', ')"
+          }
+
+      - name: Upload optional runtime package
+        if: ${{ inputs.include_runtime }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: RubikOTC-runtime
+          path: runtime
+          if-no-files-found: error
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: RubikOTC-windows-release
+          path: ${{ github.workspace }}/artifacts
+
+  variants:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: CMake Debug
+            type: cmake
+            os: windows-2022
+            configuration: Debug
+            triplet: x64-windows
+            cache_flavor: base
+            vcpkg_feature: ""
+            artifact: RubikOTC-windows-cmake-debug
+          - name: Solution Debug
+            type: solution
+            os: windows-2025-vs2026
+            configuration: Debug
+            triplet: x64-windows-static
+            cache_flavor: base
+            vcpkg_feature: ""
+            artifact: RubikOTC-windows-solution-debug
+          - name: Solution OpenGL
+            type: solution
+            os: windows-2025-vs2026
+            configuration: OpenGL
+            triplet: x64-windows-static
+            cache_flavor: base
+            vcpkg_feature: ""
+            artifact: RubikOTC-windows-solution-opengl
+          - name: Solution DirectX (ANGLE)
+            type: solution
+            os: windows-2025-vs2026
+            configuration: DirectX
+            triplet: x64-windows-static
+            cache_flavor: directx
+            vcpkg_feature: directx
+            artifact: RubikOTC-windows-solution-directx
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      VCPKG_MAX_CONCURRENCY: 2
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Read vcpkg baseline
+        id: baseline
+        shell: pwsh
+        run: |
+          $json = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          $commit = $json.'builtin-baseline'
+          if ($commit -notmatch '^[0-9a-f]{40}$') {
+            throw 'vcpkg builtin-baseline must be a full commit SHA.'
+          }
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path .vcpkg-binary-cache | Out-Null
+
+      - name: Restore compiled dependencies
+        id: dependencies
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg-binary-cache
+            ${{ github.workspace }}/vcpkg/downloads
+          key: vcpkg-windows-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-${{ matrix.cache_flavor }}-variants-v1
+          restore-keys: |
+            vcpkg-windows-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-base-
+            vcpkg-windows-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-windows-${{ matrix.triplet }}-
+            vcpkg-windows-x64-static-
+            vcpkg-windows-release-
+
+      - name: Compiler cache
+        if: matrix.type == 'cmake'
+        uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          max-size: "1G"
+          variant: sccache
+          key: ccache-windows-debug
+          restore-keys: ccache-windows-debug
+
+      - name: Install pinned vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
+        with:
+          vcpkgDirectory: ${{ github.workspace }}/vcpkg
+          vcpkgGitCommitId: ${{ steps.baseline.outputs.commit }}
+          vcpkgJsonGlob: vcpkg.json
+
+      - name: Set up CMake and Ninja
+        if: matrix.type == 'cmake'
+        uses: lukka/get-cmake@v3.31.6
+
+      - name: Set up MSVC environment
+        if: matrix.type == 'cmake'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Verify Visual Studio 2026 v145 toolset
+        if: matrix.type == 'solution'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installationPath = & $vswhere -latest -prerelease -products '*' -version '[18.0,19.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ([string]::IsNullOrWhiteSpace($installationPath)) {
+            throw 'Visual Studio 2026 with the native C++ toolset is required by vc18/otclient.sln.'
+          }
+          $versionFile = Join-Path $installationPath 'VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt'
+          $toolsetVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+          if ($toolsetVersion -notmatch '^14\.5') {
+            throw "The solution requires v145; found $toolsetVersion."
+          }
+
+      - name: Set up MSBuild
+        if: matrix.type == 'solution'
+        uses: microsoft/setup-msbuild@v3
+        with:
+          vs-prerelease: true
+          vs-version: "[18.0,19.0)"
+
+      - name: Build CMake Debug
+        if: matrix.type == 'cmake'
+        shell: pwsh
+        run: |
+          cmake --preset windows-debug -DTOGGLE_BIN_FOLDER=ON -DOPTIONS_ENABLE_IPO=OFF -DOTCLIENT_BUILD_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-debug --parallel 2
+          exit $LASTEXITCODE
+
+      - name: Build Visual Studio solution
+        if: matrix.type == 'solution'
+        shell: pwsh
+        run: |
+          $outDir = Join-Path $env:GITHUB_WORKSPACE "artifacts/${{ matrix.configuration }}"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          msbuild.exe vc18/otclient.sln `
+            /m:2 `
+            /p:Configuration=${{ matrix.configuration }} `
+            /p:Platform=x64 `
+            /p:VcpkgEnableManifest=true `
+            /p:VcpkgRoot="$env:VCPKG_ROOT" `
+            /p:VcpkgManifestRoot="$env:GITHUB_WORKSPACE" `
+            /p:VcpkgManifestFeatures="${{ matrix.vcpkg_feature }}" `
+            /p:OutDir="$outDir\\" `
+            /p:GITHUB_WORKSPACE="$env:GITHUB_WORKSPACE"
+
+      - name: Save completed dependency work
+        if: ${{ always() && steps.baseline.outcome == 'success' && steps.dependencies.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg-binary-cache
+            ${{ github.workspace }}/vcpkg/downloads
+          key: vcpkg-windows-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json') }}-${{ matrix.cache_flavor }}-variants-v1
+
+      - name: Stage CMake Debug artifact
+        if: matrix.type == 'cmake'
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'build/windows-debug/bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $source 'otclient.exe'))) {
+            throw "CMake Debug executable was not found in $source."
+          }
+          New-Item -ItemType Directory -Force -Path artifacts/CMakeDebug | Out-Null
+          Copy-Item -LiteralPath "$source/otclient.exe" -Destination artifacts/CMakeDebug/RubikOTC-Debug.exe
+          Get-ChildItem -LiteralPath $source -File | Where-Object Extension -In '.pdb', '.ilk', '.dll' | Copy-Item -Destination artifacts/CMakeDebug
+
+      - name: Upload variant artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.type == 'cmake' && 'artifacts/CMakeDebug' || format('artifacts/{0}', matrix.configuration) }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish "latest" release
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [build, variants]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: rubikotc-release-latest
+      cancel-in-progress: false
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: RubikOTC-windows-release
+          path: artifacts
+
+      - name: Zip binaries
+        run: cd artifacts && zip -r ../RubikOTC-windows.zip .
+
+      - name: Update "latest" release without deleting existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A newer push may change workflows while this build is running.
+          # Do not publish stale code or delete the previous release in that case.
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo 'A newer main commit exists; keeping this build as an Actions artifact.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/latest" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/latest" \
+              -f sha="$GITHUB_SHA" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref=refs/tags/latest -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          title="Latest build ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})"
+          notes="Automatic build of the latest \`main\` commit ${GITHUB_SHA::7}.
+
+          Binary-only update: executable, matching debug symbols and any required DLLs. Install into an existing RubikOTC client with init.lua, data, modules and mods. Game assets remain separate. For a fresh installation, the optional runtime package can be generated with workflow_dispatch (include_runtime)."
+          if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit latest -R "$GITHUB_REPOSITORY" --prerelease --title "$title" --notes "$notes"
+          else
+            gh release create latest -R "$GITHUB_REPOSITORY" --verify-tag --prerelease --title "$title" --notes "$notes"
+          fi
+          gh release upload latest RubikOTC-windows.zip -R "$GITHUB_REPOSITORY" --clobber
