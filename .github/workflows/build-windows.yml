@@ -29,6 +29,7 @@ jobs:
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     name: windows-2022-release
     runs-on: windows-2022
+    timeout-minutes: 10
 
     concurrency:
       group: rubikotc-${{ github.workflow }}-${{ github.ref }}
@@ -139,6 +140,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: RubikOTC-windows-build-log
+          retention-days: 1
           path: |
             ${{ github.workspace }}/windows-build.log
             ${{ github.workspace }}/build/windows-release/vcpkg-manifest-install.log
@@ -234,6 +236,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: RubikOTC-windows-release
+          retention-days: 1
           path: ${{ github.workspace }}/artifacts
 
   variants:
