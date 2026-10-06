@@ -1,0 +1,14 @@
+name: Build - Linux
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-platforms.yml
+    with:
+      platform: linux
+
