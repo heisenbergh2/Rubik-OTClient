@@ -140,7 +140,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: RubikOTC-windows-build-log
-          retention-days: 1
+          retention-days: 30
           path: |
             ${{ github.workspace }}/windows-build.log
             ${{ github.workspace }}/build/windows-release/vcpkg-manifest-install.log
@@ -236,7 +236,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: RubikOTC-windows-release
-          retention-days: 1
+          retention-days: 30
           path: ${{ github.workspace }}/artifacts
 
   variants:
