@@ -2,17 +2,7 @@ name: Build - Windows
 
 on:
   workflow_dispatch:
-    inputs:
-      include_runtime:
-        description: Also upload data, modules and default config as a separate package
-        type: boolean
-        default: false
   workflow_call:
-    inputs:
-      include_runtime:
-        description: Also upload data, modules and default config as a separate package
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -207,17 +197,6 @@ jobs:
 
           Copy-Item $exePath.FullName -Destination "$artifactDir\RubikOTC.exe"
 
-      - name: Prepare optional runtime package
-        if: ${{ inputs.include_runtime }}
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path runtime | Out-Null
-          foreach ($item in @('init.lua', 'config.ini', 'cacert.pem', 'data', 'modules', 'mods')) {
-            if (Test-Path -LiteralPath $item) {
-              Copy-Item -LiteralPath $item -Destination runtime -Recurse -Force
-            }
-          }
-
       - name: Validate Windows executable and runtime linkage
         shell: pwsh
         run: |
@@ -235,15 +214,6 @@ jobs:
           if ($dynamicRuntime.Count -gt 0) {
             throw "Static package unexpectedly imports the dynamic MSVC runtime: $($dynamicRuntime -join ', ')"
           }
-
-      - name: Upload optional runtime package
-        if: ${{ inputs.include_runtime }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: RubikOTC-runtime
-          path: runtime
-          retention-days: 30
-          if-no-files-found: error
 
       - name: Upload executable artifact
         uses: actions/upload-artifact@v7
@@ -472,7 +442,7 @@ jobs:
           title="Latest build ($(date -u +%Y-%m-%d), ${GITHUB_SHA::7})"
           notes="Automatic build of the latest \`main\` commit ${GITHUB_SHA::7}.
 
-          Executable-only update: RubikOTC.exe. Install it into an existing RubikOTC client with init.lua, data, modules and mods. Game assets remain separate. For a fresh installation, the optional runtime package can be generated with workflow_dispatch (include_runtime)."
+          Executable-only update: RubikOTC.exe. Install it into an existing RubikOTC client with init.lua, data, modules, mods and cacert.pem. Game assets remain separate. Runtime files are not uploaded to conserve Actions artifact storage."
           if gh release view latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release edit latest -R "$GITHUB_REPOSITORY" --prerelease --title "$title" --notes "$notes"
           else
