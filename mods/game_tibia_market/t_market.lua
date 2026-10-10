@@ -1591,9 +1591,19 @@ function resetMyOffersPanelView()
 end
 
 function onMarketEnter(offerCount, items)
-	configureList()
-
 	depotLockerItems = items
+
+	-- Balance/depot updates can repeat MarketEnter while browsing. Do not
+	-- rebuild filters or detach the virtual list's scrollbar in that case.
+	if marketWindow:isVisible() then
+		if not table.empty(lastSelectedItem) then
+			refreshSelectedItemDepotDisplay()
+		end
+		requestMarketGoldRefresh()
+		return
+	end
+
+	configureList()
 
 	marketWindow.contentPanel.category:destroyChildren()
 
@@ -1634,16 +1644,6 @@ function onMarketEnter(offerCount, items)
 
 	function marketWindow.contentPanel.category:onChildFocusChange(selected)
 		onSelectChildCategory(self, selected)
-	end
-
-	if marketWindow:isVisible() then
-		if not table.empty(lastSelectedItem) then
-			refreshSelectedItemDepotDisplay()
-		end
-
-		requestMarketGoldRefresh()
-
-		return
 	end
 
 	show()
@@ -2334,7 +2334,7 @@ function onSelectChildItem(widget, selected, oldFocus)
 	lastSelectedItem = {
 		itemId = itemID,
 		tier = itemTier,
-		lastWidget = widget
+		lastWidget = selected
 	}
 
 	local selCount

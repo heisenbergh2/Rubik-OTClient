@@ -25,7 +25,12 @@ env:
   VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite"
 
 jobs:
+  visual-checks:
+    name: Validate visual fixes before compiling
+    uses: ./.github/workflows/tests-visual.yml
+
   build:
+    needs: visual-checks
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     name: windows-2022-release
     runs-on: windows-2022
@@ -225,6 +230,7 @@ jobs:
         with:
           name: RubikOTC-runtime
           path: runtime
+          retention-days: 30
           if-no-files-found: error
 
       - name: Upload executable artifact

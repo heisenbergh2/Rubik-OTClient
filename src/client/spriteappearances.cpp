@@ -122,8 +122,11 @@ bool SpriteAppearances::loadSpriteSheet(const SpriteSheetPtr& sheet) const
 
     try {
         const auto& path = fmt::format("{}{}", g_spriteAppearances.getPath(), sheet->file);
-        if (!g_resources.fileExists(path))
+        if (!g_resources.fileExists(path)) {
+            // A missing file must not leave the sheet permanently LOADING.
+            sheet->m_loadingState.store(SpriteLoadState::NONE, std::memory_order_release);
             return false;
+        }
 
         const auto& fin = g_resources.openFile(path);
         fin->cache(true);

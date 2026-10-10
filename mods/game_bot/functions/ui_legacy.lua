@@ -29,20 +29,39 @@ context.importStyle = function(otml)
   return g_ui.importStyleFromString(otml)
 end
 
+local function layoutBotTabs(tabBar)
+  if tabBar:isDestroyed() or not tabBar.buttonsPanel then return end
+  local available = tabBar.buttonsPanel:getWidth()
+  if available <= 0 then return end
+
+  local x, y = 0, 0
+  for _, tab in ipairs(tabBar.tabs) do
+    local width = math.min(available, tab:getTextSize().width + tab:getPaddingLeft() + tab:getPaddingRight())
+    if x > 0 and x + width > available then
+      x, y = 0, y + 21
+    end
+    tab:setWidth(width)
+    tab:setMarginLeft(x)
+    tab:setMarginTop(y)
+    x = x + width + 1
+  end
+  tabBar:setHeight(y + 21)
+end
+
 context.addTab = function(name)
   local tab = context.tabs:getTab(name)
   if tab then -- return existing tab
     return tab.tabPanel.content
   end
 
-  local smallTabs = #(context.tabs.tabs) >= 5
   local newTab = context.tabs:addTab(name, g_ui.createWidget('BotPanel')).tabPanel.content
   context.tabs:setOn(true)
-  if smallTabs then
-    for k,tab in pairs(context.tabs.tabs) do
-      tab:setFont('small-9px')
-    end
+  -- Wrap instead of shrinking/clipping the sixth (often HP) tab.
+  context.tabs.onGeometryChange = layoutBotTabs
+  context.tabs.buttonsPanel.onGeometryChange = function()
+    layoutBotTabs(context.tabs)
   end
+  layoutBotTabs(context.tabs)
 
   return newTab
 end

@@ -1,0 +1,20 @@
+name: Tests - Visual regressions
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  visual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      - name: Validate repository integrity
+        run: python3 -B tools/validate_repository.py
+      - name: Test visual regression logic
+        run: luajit tests/lua/visual_regression_test.lua
