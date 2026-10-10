@@ -40,6 +40,7 @@ local scroll = { maximum = 92, value = 37, onValueChange = function() end }
 local callback = scroll.onValueChange
 local refreshed, gold = 0, 0
 local marketEnv = {
+	marketSessionReady = true,
   marketWindow = { isVisible = function() return true end },
   lastSelectedItem = {itemId = 123},
   table = setmetatable({empty = function(t) return next(t) == nil end}, {__index = table}),
@@ -73,6 +74,31 @@ marketEnv.updateCategoryRowColors = function() end
 marketEnv.show = function() shown = shown + 1 end
 marketEnv.onMarketEnter(0, items)
 assert(shown == 1 and configured == 1 and scroll.maximum == 0 and scroll.onValueChange == nil)
+-- A slow first reply may arrive after the UI's delayed show() fallback.
+marketEnv.marketSessionReady = false
+marketEnv.marketWindow.isVisible = function() return true end
+marketEnv.onMarketEnter(0, items)
+assert(configured == 2 and shown == 2 and marketEnv.marketSessionReady == true)
+
+-- Keep the selected row, not its parent list, for subsequent visual updates.
+local selectionSource = section('mods/game_tibia_market/t_market.lua',
+  'function onSelectChildItem(', '\tlocal selCount')
+local selectedRow = {
+  setBackgroundColor = function() end,
+  item = {getItemId = function() return 123 end,
+    getItem = function() return {getTier = function() return 0 end} end}
+}
+local parentList = {}
+local selectionEnv = {
+  lastSelectedItem = {},
+  marketWindow = {contentPanel = {selectedItem = {
+    setItemId = function() end, setTier = function() end
+  }}},
+  applyMarketItemTierBadge = function() end, applyMarketItemRarity = function() end
+}
+run(selectionSource .. '\nreturn lastSelectedItem\nend', selectionEnv)
+local selection = selectionEnv.onSelectChildItem(parentList, selectedRow, nil)
+assert(selection.lastWidget == selectedRow)
 
 -- New sparse containers have three rows, capped by capacity; maximize still works.
 local containerSource = section('modules/game_containers/containers.lua',
