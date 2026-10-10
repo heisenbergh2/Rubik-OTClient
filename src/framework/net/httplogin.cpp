@@ -23,6 +23,7 @@
 #include "httplogin.h"
 #include <framework/core/asyncdispatcher.h>
 #include <framework/core/eventdispatcher.h>
+#include <framework/core/resourcemanager.h>
 #include <nlohmann/json.hpp>
 
 #ifdef __EMSCRIPTEN__
@@ -44,33 +45,18 @@ void LoginHttp::cancel() {
 }
 
 void LoginHttp::Logger(const auto& req, const auto& res) {
-    std::cout << "======= LOG ======= " << std::endl;
-    std::cout << "-- REQUEST --" << std::endl;
-    std::cout << req.method << std::endl;
-    std::cout << req.path << std::endl;
-    std::cout << req.body << std::endl;
-
-    for (auto itr = req.headers.begin(); itr != req.headers.end(); ++itr) {
-        std::cout << itr->first << '\t' << itr->second << '\n';
-    }
-    std::cout << "-- RESPONSE --" << std::endl;
-    std::cout << res.version << std::endl;
-    std::cout << res.status << std::endl;
-    std::cout << res.reason << std::endl;
-    std::cout << res.body << std::endl;
-    std::cout << res.location << std::endl;
-
-    for (auto itr = res.headers.begin(); itr != res.headers.end(); ++itr) {
-        std::cout << itr->first << '\t' << itr->second << '\n';
-    }
-
-    std::cout << "========= " << std::endl;
+    // Never log bodies or headers here: login requests contain passwords and
+    // responses may contain reusable session keys.
+    g_logger.debug("HTTP login {} -> {}", req.method, res.status);
 }
 
 void LoginHttp::startHttpLogin(const std::string& host, const std::string& path,
                                const uint16_t port, const std::string& email,
                                const std::string& password) {
     httplib::SSLClient cli(host, port);
+    cli.set_ca_cert_path((std::filesystem::path(g_resources.getWorkDir()) / "cacert.pem").string().c_str());
+    cli.enable_server_certificate_verification(true);
+    cli.enable_server_hostname_verification(true);
 
     cli.set_logger(
         [this](const auto& req, const auto& res) { LoginHttp::Logger(req, res); });
@@ -80,10 +66,7 @@ void LoginHttp::startHttpLogin(const std::string& host, const std::string& path,
 
     if (auto res = cli.Post(path, headers, body.dump(1), "application/json")) {
         if (res->status == 200) {
-            const json bodyResponse = json::parse(res->body);
-            std::cout << bodyResponse.dump() << std::endl;
-
-            std::cout << std::boolalpha << json::accept(res->body) << std::endl;
+            parseJsonResponse(res->body);
         }
     } else {
         const auto err = res.error();
@@ -107,7 +90,10 @@ void LoginHttp::httpLogin(const std::string& host, const std::string& path,
         if (cancelled.load()) return;
         httplib::Result result =
             this->loginHttpsJson(host, path, port, email, password, token);
-        if (httpLogin && (!result || result->status != Success)) {
+        // Plain HTTP fallback is restricted to loopback development servers.
+        // A failed TLS check must never expose remote login credentials.
+        const bool loopback = host == "localhost" || host == "127.0.0.1" || host == "::1";
+        if (httpLogin && loopback && (!result || result->status != Success)) {
             if (cancelled.load()) return;
             result = loginHttpJson(host, path, port, email, password, token);
         }
@@ -197,24 +183,38 @@ void LoginHttp::httpLogin(const std::string& host, const std::string& path,
 
         std::string url = "https://" + (host.length() > 0 ? host : "127.0.0.1") + ":" + std::to_string(port) + path;
         emscripten_fetch_t* fetch = emscripten_fetch(&attr, url.c_str());
+        int status = fetch ? fetch->status : -1;
+        std::string responseBody;
+        if (fetch) {
+            if (fetch->data && fetch->numBytes > 0)
+                responseBody.assign(fetch->data, fetch->numBytes);
+            emscripten_fetch_close(fetch);
+            fetch = nullptr;
+        }
 
-        if (fetch->status != 200 && httpLogin) {
+        const bool loopback = host.empty() || host == "localhost" || host == "127.0.0.1" || host == "::1";
+        if (status != Success && httpLogin && loopback && !cancelled.load()) {
             std::string url = "http://" + (host.length() > 0 ? host : "127.0.0.1") + ":" + std::to_string(port) + path;
             fetch = emscripten_fetch(&attr, url.c_str());
+            status = fetch ? fetch->status : -1;
+            responseBody.clear();
+            if (fetch) {
+                if (fetch->data && fetch->numBytes > 0)
+                    responseBody.assign(fetch->data, fetch->numBytes);
+                emscripten_fetch_close(fetch);
+                fetch = nullptr;
+            }
         }
 
         if (cancelled.load()) {
-            emscripten_fetch_close(fetch);
             return;
         }
-        if (fetch && fetch->status == 200 &&
-               !parseJsonResponse(std::string(fetch->data, fetch->numBytes))) {
-            fetch->status = -1;
+        if (status == Success && !parseJsonResponse(responseBody)) {
+            status = -1;
         }
 
-        emscripten_fetch_close(fetch);
         if (cancelled.load()) return;
-        if (fetch && fetch->status == 200) {
+        if (status == Success) {
             g_dispatcher.addEvent([this, request_id] {
                 if (cancelled.load()) return;
                 g_lua.callGlobalField("EnterGame", "loginSuccess", request_id,
@@ -222,13 +222,7 @@ void LoginHttp::httpLogin(const std::string& host, const std::string& path,
                 this->getCharacterList());
             });
         } else {
-            int status = 0;
             std::string msg = "";
-            if (fetch) {
-                status = fetch->status;
-            } else {
-                status = -1;
-            }
             if (this->errorMessage.length() == 0) {
                 msg = "Unknown error";
             } else {
@@ -256,9 +250,9 @@ httplib::Result LoginHttp::loginHttpsJson(const std::string& host,
     client.set_logger(
         [this](const auto& req, const auto& res) { LoginHttp::Logger(req, res); });
 
-    client.set_ca_cert_path("./cacert.pem");
-    client.enable_server_certificate_verification(false);
-    client.enable_server_hostname_verification(false);
+    client.set_ca_cert_path((std::filesystem::path(g_resources.getWorkDir()) / "cacert.pem").string().c_str());
+    client.enable_server_certificate_verification(true);
+    client.enable_server_hostname_verification(true);
 
     json body = {
         {"email", email},

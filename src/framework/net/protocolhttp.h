@@ -23,6 +23,7 @@
 #pragma once
 
 #include <framework/global.h>
+#include <framework/core/resourcemanager.h>
 #include <framework/stdext/uri.h>
 
  //  result
@@ -76,9 +77,13 @@ public:
         assert(m_callback != nullptr);
         assert(m_result != nullptr);
 
-        // Configure SSL context properly
-        m_context.set_default_verify_paths();
-        m_context.set_verify_mode(asio::ssl::verify_none);
+        // Require a trusted certificate chain. The bundled CA file is used when
+        // available; the platform/OpenSSL default paths remain a fallback.
+        std::error_code defaultPathsError;
+        m_context.set_default_verify_paths(defaultPathsError);
+        std::error_code bundledCaError;
+        m_context.load_verify_file((std::filesystem::path(g_resources.getWorkDir()) / "cacert.pem").string(), bundledCaError);
+        m_context.set_verify_mode(asio::ssl::verify_peer);
         m_context.set_options(asio::ssl::context::default_workarounds |
                               asio::ssl::context::no_sslv2 |
                               asio::ssl::context::no_sslv3 |
@@ -123,6 +128,7 @@ private:
 
     void onTimeout(const std::error_code& ec);
     void onError(const std::string& ec, const std::string& details = "") const;
+    bool usesSsl() const { return instance_uri.protocol == "https"; }
 };
 
 //  web socket
@@ -148,6 +154,12 @@ public:
     {
         assert(m_callback != nullptr);
         assert(m_result != nullptr);
+
+        std::error_code defaultPathsError;
+        m_context.set_default_verify_paths(defaultPathsError);
+        std::error_code bundledCaError;
+        m_context.load_verify_file((std::filesystem::path(g_resources.getWorkDir()) / "cacert.pem").string(), bundledCaError);
+        m_context.set_verify_mode(asio::ssl::verify_peer);
     };
 
     void start();
@@ -189,6 +201,7 @@ private:
     void on_close(const std::error_code& ec);
     void onTimeout(const std::error_code& ec);
     void onError(const std::string& ec, const std::string& details = "");
+    bool usesSsl() const { return instance_uri.protocol == "wss"; }
 };
 
 class Http

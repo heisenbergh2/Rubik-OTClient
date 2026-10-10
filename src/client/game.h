@@ -455,7 +455,7 @@ public:
 
     // highscore related
     void requestHighscore(uint8_t action, uint8_t category, uint32_t vocation, std::string_view world, uint8_t worldType, uint8_t battlEye, uint16_t page, uint8_t totalPages);
-    void processHighscore(std::string_view serverName, std::string_view world, uint8_t worldType, uint8_t battlEye,
+    void processHighscore(const std::vector<std::string>& worlds, std::string_view world, uint8_t worldType, uint8_t battlEye,
                           const std::vector<std::tuple<uint32_t, std::string>>& vocations,
                           const std::vector<std::tuple<uint8_t, std::string>>& categories,
                           uint16_t page, uint16_t totalPages,

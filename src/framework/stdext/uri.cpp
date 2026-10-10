@@ -22,19 +22,26 @@
 
 #include "uri.h"
 
+#include <algorithm>
+#include <cctype>
+#include <regex>
+
 ParsedURI parseURI(const std::string& url) {
     // Regular expression pattern to match URL components
     static const std::regex PARSE_URL{
-        R"((([httpsw]{2,5})://)?([^/ :]+)(:(\d+))?(/(.+)?))",
+        R"(((https?|wss?)://)?([^/ :?#]+)(:(\d+))?(/([^#]*))?(#[^\r\n]*)?)",
         std::regex_constants::ECMAScript | std::regex_constants::icase };
 
     ParsedURI result;
     std::smatch match;
 
     // Check if the URL matches the pattern and has the correct number of components
-    if (std::regex_match(url, match, PARSE_URL) && match.size() == 8) {
+    if (std::regex_match(url, match, PARSE_URL) && match.size() == 9) {
         // Set protocol with default value "http" if not provided
         result.protocol = (match[2].str().empty()) ? "http" : match[2].str();
+        std::ranges::transform(result.protocol, result.protocol.begin(), [](const unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
 
         // Set domain
         result.domain = match[3].str();

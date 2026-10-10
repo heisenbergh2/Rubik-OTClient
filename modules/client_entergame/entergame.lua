@@ -49,12 +49,6 @@ local function sendHttpLoginRequest(httpLogin, token, scheme, port)
 			return
 		end
 
-		if err and scheme == "https" and httpLogin then
-			sendHttpLoginRequest(httpLogin, token, "http", G.httpFallbackPort or 80)
-
-			return
-		end
-
 		EnterGame.handleHttpLoginResponse(data, err, requestId)
 	end)
 end

@@ -36,6 +36,7 @@
 #include <openssl/rand.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
+#include <zlib.h>
 #include <cstdint>
 
 #if defined(WIN32)
@@ -47,6 +48,99 @@
 #endif
 
 ResourceManager g_resources;
+
+namespace {
+constexpr size_t MAX_CONFIG_ARCHIVE_SIZE = 16 * 1024 * 1024;
+constexpr size_t MAX_CONFIG_FILE_SIZE = 8 * 1024 * 1024;
+constexpr size_t MAX_CONFIG_FILE_COUNT = 1024;
+constexpr uint32_t ZIP_LOCAL_HEADER = 0x04034B50;
+constexpr uint32_t ZIP_CENTRAL_HEADER = 0x02014B50;
+constexpr uint32_t ZIP_END_HEADER = 0x06054B50;
+
+void appendU16(std::string& output, const uint16_t value)
+{
+    output.push_back(static_cast<char>(value & 0xFF));
+    output.push_back(static_cast<char>((value >> 8) & 0xFF));
+}
+
+void appendU32(std::string& output, const uint32_t value)
+{
+    appendU16(output, static_cast<uint16_t>(value & 0xFFFF));
+    appendU16(output, static_cast<uint16_t>(value >> 16));
+}
+
+bool readU16(const std::string& input, const size_t offset, uint16_t& value)
+{
+    if (offset > input.size() || input.size() - offset < 2)
+        return false;
+    value = static_cast<uint8_t>(input[offset]) |
+            (static_cast<uint16_t>(static_cast<uint8_t>(input[offset + 1])) << 8);
+    return true;
+}
+
+bool readU32(const std::string& input, const size_t offset, uint32_t& value)
+{
+    if (offset > input.size() || input.size() - offset < 4)
+        return false;
+    value = static_cast<uint8_t>(input[offset]) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(input[offset + 1])) << 8) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(input[offset + 2])) << 16) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(input[offset + 3])) << 24);
+    return true;
+}
+
+bool normalizeArchivePath(const std::string& input, std::string& output)
+{
+    if (input.empty() || input.size() > 512 || input.find('\0') != std::string::npos)
+        return false;
+
+    output = input;
+    std::ranges::replace(output, '\\', '/');
+    if (output.front() == '/' || output.find(':') != std::string::npos)
+        return false;
+
+    size_t begin = 0;
+    while (begin < output.size()) {
+        const size_t end = output.find('/', begin);
+        const std::string_view part(output.data() + begin, (end == std::string::npos ? output.size() : end) - begin);
+        if (part.empty() || part == "." || part == ".." || part.ends_with('.') || part.ends_with(' '))
+            return false;
+        for (const unsigned char character : part) {
+            if (character < 32 || character == '<' || character == '>' || character == '"' ||
+                character == '|' || character == '?' || character == '*')
+                return false;
+        }
+        if (end == std::string::npos)
+            break;
+        begin = end + 1;
+    }
+    return !output.ends_with('/');
+}
+
+uint32_t calculateCrc32(const std::string& contents)
+{
+    uint32_t checksum = ::crc32(0, nullptr, 0);
+    return ::crc32(checksum, reinterpret_cast<const Bytef*>(contents.data()), static_cast<uInt>(contents.size()));
+}
+
+bool inflateZipEntry(const std::string& archive, const size_t dataOffset, const uint32_t compressedSize,
+                     const uint32_t uncompressedSize, std::string& output)
+{
+    output.assign(uncompressedSize, '\0');
+    unsigned char emptyOutput = 0;
+    z_stream stream{};
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(archive.data() + dataOffset));
+    stream.avail_in = compressedSize;
+    stream.next_out = output.empty() ? &emptyOutput : reinterpret_cast<Bytef*>(output.data());
+    stream.avail_out = output.empty() ? 1 : uncompressedSize;
+
+    if (inflateInit2(&stream, -MAX_WBITS) != Z_OK)
+        return false;
+    const int result = inflate(&stream, Z_FINISH);
+    inflateEnd(&stream);
+    return result == Z_STREAM_END && stream.total_out == uncompressedSize && stream.total_in == compressedSize;
+}
+}
 
 void ResourceManager::init(const char* argv0)
 {
@@ -973,10 +1067,204 @@ bool ResourceManager::launchCorrect(const std::vector<std::string>& args) { // c
 #endif
 }
 
-std::string ResourceManager::createArchive(const std::unordered_map<std::string, std::string>& /*files*/) { return ""; }
-
-std::unordered_map<std::string, std::string> ResourceManager::decompressArchive(std::string /*dataOrPath*/)
+std::string ResourceManager::createArchive(const std::unordered_map<std::string, std::string>& files)
 {
-    std::unordered_map<std::string, std::string> ret;
-    return ret;
+    struct Entry {
+        std::string name;
+        const std::string* contents;
+        uint32_t checksum;
+        uint32_t localOffset;
+    };
+
+    if (files.empty() || files.size() > MAX_CONFIG_FILE_COUNT)
+        return {};
+
+    std::vector<Entry> entries;
+    entries.reserve(files.size());
+    size_t totalSize = 0;
+    for (const auto& [originalName, contents] : files) {
+        std::string name;
+        if (!normalizeArchivePath(originalName, name) || contents.size() > MAX_CONFIG_FILE_SIZE ||
+            totalSize > MAX_CONFIG_ARCHIVE_SIZE - contents.size()) {
+            g_logger.error("Unable to create config archive: invalid entry");
+            return {};
+        }
+        totalSize += contents.size();
+        entries.push_back({ std::move(name), &contents, calculateCrc32(contents), 0 });
+    }
+
+    std::ranges::sort(entries, {}, &Entry::name);
+    for (size_t i = 1; i < entries.size(); ++i) {
+        if (entries[i - 1].name == entries[i].name)
+            return {};
+    }
+    std::string archive;
+    archive.reserve(totalSize + entries.size() * 128);
+    constexpr uint16_t utf8Flag = 0x0800;
+
+    for (auto& entry : entries) {
+        if (archive.size() > std::numeric_limits<uint32_t>::max())
+            return {};
+        entry.localOffset = static_cast<uint32_t>(archive.size());
+        appendU32(archive, ZIP_LOCAL_HEADER);
+        appendU16(archive, 20);
+        appendU16(archive, utf8Flag);
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU32(archive, entry.checksum);
+        appendU32(archive, static_cast<uint32_t>(entry.contents->size()));
+        appendU32(archive, static_cast<uint32_t>(entry.contents->size()));
+        appendU16(archive, static_cast<uint16_t>(entry.name.size()));
+        appendU16(archive, 0);
+        archive.append(entry.name);
+        archive.append(*entry.contents);
+    }
+
+    if (archive.size() > std::numeric_limits<uint32_t>::max())
+        return {};
+    const uint32_t centralOffset = static_cast<uint32_t>(archive.size());
+    for (const auto& entry : entries) {
+        appendU32(archive, ZIP_CENTRAL_HEADER);
+        appendU16(archive, 20);
+        appendU16(archive, 20);
+        appendU16(archive, utf8Flag);
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU32(archive, entry.checksum);
+        appendU32(archive, static_cast<uint32_t>(entry.contents->size()));
+        appendU32(archive, static_cast<uint32_t>(entry.contents->size()));
+        appendU16(archive, static_cast<uint16_t>(entry.name.size()));
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU16(archive, 0);
+        appendU32(archive, 0);
+        appendU32(archive, entry.localOffset);
+        archive.append(entry.name);
+    }
+
+    const size_t centralSizeValue = archive.size() - centralOffset;
+    if (centralSizeValue > std::numeric_limits<uint32_t>::max() || archive.size() + 22 > MAX_CONFIG_ARCHIVE_SIZE)
+        return {};
+    appendU32(archive, ZIP_END_HEADER);
+    appendU16(archive, 0);
+    appendU16(archive, 0);
+    appendU16(archive, static_cast<uint16_t>(entries.size()));
+    appendU16(archive, static_cast<uint16_t>(entries.size()));
+    appendU32(archive, static_cast<uint32_t>(centralSizeValue));
+    appendU32(archive, centralOffset);
+    appendU16(archive, 0);
+    return archive;
+}
+
+std::unordered_map<std::string, std::string> ResourceManager::decompressArchive(std::string dataOrPath)
+{
+    if (!dataOrPath.starts_with("PK")) {
+        try {
+            dataOrPath = readFileContents(dataOrPath);
+        } catch (const std::exception& exception) {
+            g_logger.error("Unable to read config archive: {}", exception.what());
+            return {};
+        }
+    }
+
+    const std::string& archive = dataOrPath;
+    if (archive.size() < 22 || archive.size() > MAX_CONFIG_ARCHIVE_SIZE)
+        return {};
+
+    const size_t minimumEndPosition = archive.size() > 65557 ? archive.size() - 65557 : 0;
+    size_t endPosition = std::string::npos;
+    for (size_t position = archive.size() - 22;; --position) {
+        uint32_t signature = 0;
+        uint16_t length = 0;
+        if (readU32(archive, position, signature) && signature == ZIP_END_HEADER &&
+            readU16(archive, position + 20, length) && position + 22 + length == archive.size()) {
+            endPosition = position;
+            break;
+        }
+        if (position == minimumEndPosition)
+            break;
+    }
+    if (endPosition == std::string::npos)
+        return {};
+
+    uint16_t disk = 0, centralDisk = 0, diskEntries = 0, entryCount = 0, commentLength = 0;
+    uint32_t centralSize = 0, centralOffset = 0;
+    if (!readU16(archive, endPosition + 4, disk) || !readU16(archive, endPosition + 6, centralDisk) ||
+        !readU16(archive, endPosition + 8, diskEntries) || !readU16(archive, endPosition + 10, entryCount) ||
+        !readU32(archive, endPosition + 12, centralSize) || !readU32(archive, endPosition + 16, centralOffset) ||
+        !readU16(archive, endPosition + 20, commentLength) || disk != 0 || centralDisk != 0 ||
+        diskEntries != entryCount || entryCount == 0 || entryCount > MAX_CONFIG_FILE_COUNT ||
+        endPosition + 22 + commentLength > archive.size() || centralOffset > endPosition ||
+        centralSize != endPosition - centralOffset) {
+        return {};
+    }
+
+    std::unordered_map<std::string, std::string> files;
+    files.reserve(entryCount);
+    size_t totalUncompressed = 0;
+    size_t centralPosition = centralOffset;
+    for (uint16_t index = 0; index < entryCount; ++index) {
+        uint32_t signature = 0, checksum = 0, compressedSize = 0, uncompressedSize = 0, localOffset = 0;
+        uint16_t flags = 0, method = 0, nameLength = 0, extraLength = 0, entryCommentLength = 0, entryDisk = 0;
+        if (!readU32(archive, centralPosition, signature) || signature != ZIP_CENTRAL_HEADER ||
+            !readU16(archive, centralPosition + 8, flags) || !readU16(archive, centralPosition + 10, method) ||
+            !readU32(archive, centralPosition + 16, checksum) || !readU32(archive, centralPosition + 20, compressedSize) ||
+            !readU32(archive, centralPosition + 24, uncompressedSize) || !readU16(archive, centralPosition + 28, nameLength) ||
+            !readU16(archive, centralPosition + 30, extraLength) || !readU16(archive, centralPosition + 32, entryCommentLength) ||
+            !readU16(archive, centralPosition + 34, entryDisk) || !readU32(archive, centralPosition + 42, localOffset) ||
+            entryDisk != 0 || (flags & 0x0001) != 0 || (method != 0 && method != 8) ||
+            uncompressedSize > MAX_CONFIG_FILE_SIZE || totalUncompressed > MAX_CONFIG_ARCHIVE_SIZE - uncompressedSize) {
+            return {};
+        }
+
+        const size_t centralEntrySize = 46ULL + nameLength + extraLength + entryCommentLength;
+        if (centralPosition > endPosition || centralEntrySize > endPosition - centralPosition)
+            return {};
+        std::string rawName = archive.substr(centralPosition + 46, nameLength);
+        std::ranges::replace(rawName, '\\', '/');
+        const bool isDirectory = rawName.ends_with('/');
+        if (isDirectory)
+            rawName.pop_back();
+        std::string name;
+        if (!normalizeArchivePath(rawName, name))
+            return {};
+
+        uint32_t localSignature = 0;
+        uint16_t localNameLength = 0, localExtraLength = 0;
+        const size_t localPosition = localOffset;
+        uint16_t localFlags = 0, localMethod = 0;
+        if (!readU32(archive, localPosition, localSignature) || localSignature != ZIP_LOCAL_HEADER ||
+            !readU16(archive, localPosition + 6, localFlags) || !readU16(archive, localPosition + 8, localMethod) ||
+            !readU16(archive, localPosition + 26, localNameLength) || !readU16(archive, localPosition + 28, localExtraLength) ||
+            localFlags != flags || localMethod != method) {
+            return {};
+        }
+        const size_t dataOffset = localPosition + 30 + localNameLength + localExtraLength;
+        if (dataOffset > centralOffset || compressedSize > centralOffset - dataOffset ||
+            archive.substr(localPosition + 30, localNameLength) != archive.substr(centralPosition + 46, nameLength))
+            return {};
+
+        std::string contents;
+        if (method == 0) {
+            if (compressedSize != uncompressedSize)
+                return {};
+            contents.assign(archive.data() + dataOffset, compressedSize);
+        } else if (!inflateZipEntry(archive, dataOffset, compressedSize, uncompressedSize, contents)) {
+            return {};
+        }
+        if (calculateCrc32(contents) != checksum || files.contains(name) || (isDirectory && !contents.empty()))
+            return {};
+
+        totalUncompressed += contents.size();
+        if (!isDirectory)
+            files.emplace(std::move(name), std::move(contents));
+        centralPosition += centralEntrySize;
+    }
+
+    if (centralPosition > endPosition || centralPosition - centralOffset != centralSize)
+        return {};
+    return files;
 }

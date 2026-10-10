@@ -2227,13 +2227,13 @@ void Game::requestHighscore(const uint8_t action, const uint8_t category, const 
     m_protocolGame->sendHighscoreInfo(action, category, vocation, world, worldType, battlEye, page, totalPages);
 }
 
-void Game::processHighscore(const std::string_view serverName, const std::string_view world, const uint8_t worldType, const uint8_t battlEye,
+void Game::processHighscore(const std::vector<std::string>& worlds, const std::string_view world, const uint8_t worldType, const uint8_t battlEye,
                             const std::vector<std::tuple<uint32_t, std::string>>& vocations,
                             const std::vector<std::tuple<uint8_t, std::string>>& categories,
                             const uint16_t page, const uint16_t totalPages,
                             const std::vector<std::tuple<uint32_t, std::string, std::string, uint8_t, std::string, uint16_t, uint8_t, uint64_t>>& highscores, const uint32_t entriesTs)
 {
-    g_lua.callGlobalField("g_game", "onProcessHighscores", serverName, world, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs);
+    g_lua.callGlobalField("g_game", "onProcessHighscores", worlds, world, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs);
 }
 
 void Game::requestBless()

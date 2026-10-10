@@ -92,7 +92,9 @@ public:
         if (available <= 0)
             return {};
 
-        bytes = std::min<uint8_t>(bytes, available);
+        bytes = std::clamp(bytes, 0, available);
+        if (bytes == 0)
+            return {};
         std::vector<uint8_t> data(bytes);
         std::memcpy(data.data(), m_buffer + m_readPos, bytes);
         return data;

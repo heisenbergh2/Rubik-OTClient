@@ -368,15 +368,8 @@ local function setupFilterOptions(worlds, vocations, categories)
 	gameworldbox:clearOptions()
 	gameworldbox:addOption(ALL_WORLDS_LABEL, "")
 
-	-- our C++ sends the world name as a single string (serverName), not a list
-	if type(worlds) == "string" then
-		if worlds ~= "" then
-			ensureWorldOption(worlds)
-		end
-	else
-		for _, worldName in ipairs(worlds or {}) do
-			ensureWorldOption(worldName)
-		end
+	for _, worldName in ipairs(worlds or {}) do
+		ensureWorldOption(worldName)
 	end
 
 	ensureWorldOption(getPlayerWorldName())
@@ -488,13 +481,17 @@ local function applyHighscoreResponse(page, totalPages, highscores, entriesTs)
 
 	fillHighscoreList(highscores)
 	highscoresWindow.page:setText(string.format("%d / %d", page, totalPages))
-	highscoresWindow.lastUpdate:setText("Last Update: " .. getTimeinWords(os.time() - entriesTs) .. " ago")
+	if not entriesTs or entriesTs == 0 then
+		highscoresWindow.lastUpdate:setText(tr("No entries found"))
+	else
+		highscoresWindow.lastUpdate:setText("Last Update: " .. getTimeinWords(os.time() - entriesTs) .. " ago")
+	end
 	highscoresWindow.lastUpdate:setColor("#909090")
 	updatePaginationButtons(page, totalPages)
 end
 
--- our C++ (Game::processHighscore) does not send selectedVocation/selectedCategory:
--- (serverName, world, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs)
+-- Game::processHighscore does not send selectedVocation/selectedCategory:
+-- (worlds, world, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs)
 function onProcessHighscores(worlds, selectedWorld, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs)
 	local req = lastHighscoreRequest
 	local selectedVocation = req and req.vocation or 0xFFFFFFFF
@@ -508,6 +505,13 @@ function onProcessHighscores(worlds, selectedWorld, worldType, battlEye, vocatio
 	totalPages = totalPages or 1
 
 	highscoreRequestPending = false
+
+	-- An empty packet contains no filter metadata; retain the current selections
+	-- and let the next populated response initialize the filters.
+	if entriesTs == 0 and #highscores == 0 then
+		applyHighscoreResponse(1, 1, {}, 0)
+		return
+	end
 
 	local hasPlayer = false
 
