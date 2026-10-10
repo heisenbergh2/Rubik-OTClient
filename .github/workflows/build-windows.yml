@@ -140,19 +140,6 @@ jobs:
           ctest --test-dir build/windows-release -R '^(HttpUri|InputPreview|ConfigArchive)\.' --output-on-failure --no-tests=error
           exit $LASTEXITCODE
 
-      - name: Upload build diagnostics
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: RubikOTC-windows-build-log
-          retention-days: 30
-          path: |
-            ${{ github.workspace }}/windows-build.log
-            ${{ github.workspace }}/build/windows-release/vcpkg-manifest-install.log
-            ${{ github.workspace }}/vcpkg/buildtrees/**/*.log
-            ${{ github.workspace }}/build/windows-release/Testing/Temporary/LastTest.log
-          if-no-files-found: ignore
-
       - name: Report build failure
         if: ${{ steps.compile.outcome == 'failure' }}
         shell: pwsh
