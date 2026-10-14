@@ -111,14 +111,16 @@ int SpriteSheet::getSpritesPerSheet() const
 
 bool SpriteAppearances::loadSpriteSheet(const SpriteSheetPtr& sheet) const
 {
-    if (sheet->m_loadingState.load(std::memory_order_acquire) == SpriteLoadState::LOADING)
-        return false;
+    // Loading, reading and garbage-collecting a sheet happen on different threads.
+    // Serialize them so a UI preview never observes a half-loaded or just-freed buffer.
+    std::unique_lock dataLock(sheet->m_dataMutex);
 
-    if (sheet->data)
+    if (sheet->data) {
+        sheet->m_loadingState.store(SpriteLoadState::LOADED, std::memory_order_release);
         return true;
+    }
 
-    if (sheet->m_loadingState.exchange(SpriteLoadState::LOADING, std::memory_order_acq_rel) == SpriteLoadState::LOADING)
-        return false;
+    sheet->m_loadingState.store(SpriteLoadState::LOADING, std::memory_order_release);
 
     try {
         const auto& path = fmt::format("{}{}", g_spriteAppearances.getPath(), sheet->file);
@@ -265,7 +267,10 @@ SpriteSheetPtr SpriteAppearances::getSheetBySpriteId(const int id, bool& isLoadi
         return nullptr;
     }
 
-    sheet->m_lastTimeUsage.restart();
+    {
+        std::scoped_lock dataLock(sheet->m_dataMutex);
+        sheet->m_lastTimeUsage.restart();
+    }
 
     return sheet;
 }
@@ -274,7 +279,11 @@ size_t SpriteAppearances::getLoadedSheetCount() const
 {
     size_t count = 0;
     for (const auto& sheet : m_sheets) {
-        if (sheet && sheet->data)
+        if (!sheet)
+            continue;
+
+        std::scoped_lock dataLock(sheet->m_dataMutex);
+        if (sheet->data)
             ++count;
     }
     return count;
@@ -293,11 +302,15 @@ size_t SpriteAppearances::collectGarbage(const uint32_t idleTimeMs)
     };
 
     // 1) regular expiry after idle time
-    std::vector<SpriteSheetPtr> stillLoaded;
+    std::vector<std::pair<SpriteSheetPtr, ticks_t>> stillLoaded;
     stillLoaded.reserve(64);
 
     for (const auto& sheet : m_sheets) {
-        if (!sheet || !sheet->data)
+        if (!sheet)
+            continue;
+
+        std::scoped_lock dataLock(sheet->m_dataMutex);
+        if (!sheet->data)
             continue;
 
         if (sheet->m_loadingState.load(std::memory_order_acquire) != SpriteLoadState::LOADED)
@@ -308,19 +321,23 @@ size_t SpriteAppearances::collectGarbage(const uint32_t idleTimeMs)
             continue;
         }
 
-        stillLoaded.push_back(sheet);
+        stillLoaded.emplace_back(sheet, sheet->m_lastTimeUsage.ticksElapsed());
     }
 
     // 2) hard ceiling: time-based expiry alone does not bound the PEAK. With 5000 sheets of 576 KB
     // a player running around town can hold hundreds of megabytes before anything expires.
     // We keep the MAX_LOADED_SHEETS most recent ones, the rest comes back from disk on next use.
     if (stillLoaded.size() > MAX_LOADED_SHEETS) {
-        std::ranges::sort(stillLoaded, [](const SpriteSheetPtr& a, const SpriteSheetPtr& b) {
-            return a->m_lastTimeUsage.ticksElapsed() < b->m_lastTimeUsage.ticksElapsed();
+        std::ranges::sort(stillLoaded, [](const auto& a, const auto& b) {
+            return a.second < b.second;
         });
 
-        for (size_t i = MAX_LOADED_SHEETS; i < stillLoaded.size(); ++i)
-            release(stillLoaded[i]);
+        for (size_t i = MAX_LOADED_SHEETS; i < stillLoaded.size(); ++i) {
+            const auto& sheet = stillLoaded[i].first;
+            std::scoped_lock dataLock(sheet->m_dataMutex);
+            if (sheet->data && sheet->m_loadingState.load(std::memory_order_acquire) == SpriteLoadState::LOADED)
+                release(sheet);
+        }
     }
 
     return freed;
@@ -352,8 +369,14 @@ ImagePtr SpriteAppearances::getSpriteImage(const int id, bool& isLoading)
 
         const int spriteWidthBytes = size.width() * 4;
 
-        for (int height = size.height() * spriteRow, offset = 0; height < size.height() + (spriteRow * size.height()); height++, offset++) {
-            std::memcpy(&pixelData[offset * spriteWidthBytes], &sheet->data[(height * SPRITE_SHEET_WIDTH_BYTES) + (spriteColumn * spriteWidthBytes)], spriteWidthBytes);
+        {
+            std::scoped_lock dataLock(sheet->m_dataMutex);
+            if (!sheet->data)
+                return nullptr;
+
+            for (int height = size.height() * spriteRow, offset = 0; height < size.height() + (spriteRow * size.height()); height++, offset++) {
+                std::memcpy(&pixelData[offset * spriteWidthBytes], &sheet->data[(height * SPRITE_SHEET_WIDTH_BYTES) + (spriteColumn * spriteWidthBytes)], spriteWidthBytes);
+            }
         }
 
         if (!image->hasTransparentPixel()) {

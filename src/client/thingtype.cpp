@@ -53,6 +53,8 @@ namespace {
 #ifdef FRAMEWORK_PROTOBUF
 void ThingType::accumulateTextureMemory(size_t& totalBytes, size_t& pendingBytes, size_t& textureCount) const
 {
+    std::scoped_lock loadingLock(m_loadingMutex);
+
     for (const auto& data : m_textureData) {
         if (!data.source)
             continue;
@@ -845,37 +847,63 @@ void ThingType::draw(const Point& dest, const int layer, const int xPattern, con
     }
 }
 
-const TexturePtr& ThingType::getTexture(const int animationPhase)
+TexturePtr ThingType::getTexture(const int animationPhase)
 {
     if (m_null) return m_textureNull;
 
-    m_lastTimeUsage.restart();
-
     auto& textureData = m_textureData[animationPhase];
+    const bool foregroundPreview = g_game.isUsingProtobuf() && g_drawPool.getCurrentType() == DrawPoolType::FOREGROUND;
+
+    // The map must never wait for disk/decompression work. Foreground previews may wait for
+    // an already-running load so they do not alternate between a real sprite and an empty frame.
+    std::unique_lock loadingLock(m_loadingMutex, std::defer_lock);
+    if (foregroundPreview) {
+        loadingLock.lock();
+    } else if (!loadingLock.try_lock()) {
+        return m_textureNull;
+    }
+
+    m_lastTimeUsage.restart();
 
     if (textureData.source)
         return textureData.source;
 
-    bool expected = false;
-    if (m_loading.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        bool async = g_app.isLoadingAsyncTexture();
-        if (g_game.isUsingProtobuf() && g_drawPool.getCurrentType() == DrawPoolType::FOREGROUND)
-            async = false;
+    if (m_loading.load(std::memory_order_acquire)) {
+        if (!foregroundPreview)
+            return m_textureNull;
 
-        if (!async) {
-            loadTexture(animationPhase);
-            m_loading.store(false, std::memory_order_release);
+        m_loadingCondition.wait(loadingLock, [this] {
+            return !m_loading.load(std::memory_order_acquire);
+        });
+
+        if (textureData.source)
             return textureData.source;
-        }
-
-        auto action = [this] {
-            for (int_fast8_t i = -1; ++i < m_animationPhases;)
-                loadTexture(i);
-            m_loading.store(false, std::memory_order_release);
-        };
-
-        g_asyncDispatcher.detach_task(std::move(action));
     }
+
+    m_loading.store(true, std::memory_order_release);
+    const bool async = g_app.isLoadingAsyncTexture() && !foregroundPreview;
+
+    if (!async) {
+        loadTexture(animationPhase);
+        m_loading.store(false, std::memory_order_release);
+        const auto result = textureData.source;
+        loadingLock.unlock();
+        m_loadingCondition.notify_all();
+        return result;
+    }
+
+    loadingLock.unlock();
+
+    auto action = [this] {
+        std::unique_lock loadingLock(m_loadingMutex);
+        for (int_fast8_t i = -1; ++i < m_animationPhases;)
+            loadTexture(i);
+        m_loading.store(false, std::memory_order_release);
+        loadingLock.unlock();
+        m_loadingCondition.notify_all();
+    };
+
+    g_asyncDispatcher.detach_task(std::move(action));
 
     return m_textureNull;
 }

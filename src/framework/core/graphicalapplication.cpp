@@ -185,7 +185,9 @@ bool GraphicalApplication::canDrawMap() const {
     if (!m_drawEvents->canDraw(MAP))
         return false;
 
-    static constexpr std::array<DrawPoolType, 3> types{ MAP, LIGHT, FOREGROUND_MAP };
+    // Map-attached widgets repaint the foreground UI. Wait for all dependent
+    // pools before another map frame starts.
+    static constexpr std::array<DrawPoolType, 5> types{ MAP, LIGHT, FOREGROUND_MAP, CREATURE_INFORMATION, FOREGROUND };
 
     for (DrawPoolType type : types) {
         if (g_drawPool.isDrawing(type))

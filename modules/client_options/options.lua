@@ -1940,6 +1940,14 @@ local function setup()
 		end
 	end
 
+	-- Older profiles kept a viewport larger than the server-aware map range.
+	-- Upgrade them once too; changing only the default would leave the black
+	-- border tiles in every existing profile.
+	if not g_settings.getBoolean("limitVisibleDimension_v2") then
+		g_settings.set("limitVisibleDimension_v2", true)
+		setOption("limitVisibleDimension", true, true)
+	end
+
 	-- Older profiles may contain both values as true because the animated
 	-- checkbox used to be disabled and had no option entry. Preserve an
 	-- explicitly selected native cursor and turn the conflicting mode off.

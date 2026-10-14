@@ -26,6 +26,8 @@
 #include <framework/graphics/declarations.h>
 #include <framework/luaengine/luaobject.h>
 
+#include <mutex>
+
 enum class SpriteLayout
 {
     // default sheet sizes
@@ -98,6 +100,7 @@ public:
 
     SpriteLayout spriteLayout = SpriteLayout::SIZE_32_32;
     std::atomic<SpriteLoadState> m_loadingState = SpriteLoadState::NONE;
+    mutable std::mutex m_dataMutex;
     std::unique_ptr<uint8_t[]> data;
     std::string file;
 

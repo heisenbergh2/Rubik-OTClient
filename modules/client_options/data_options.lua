@@ -822,7 +822,7 @@ return {
 		end
 	},
 	limitVisibleDimension = {
-		value = false,
+		value = true,
 		action = function(value, options, controller, panels, extraWidgets)
 			panels.gameMapPanel:setLimitVisibleDimension(value)
 		end
@@ -1360,6 +1360,12 @@ return {
 		value = false,
 		action = function(value)
 			g_gameConfig.setStabilizeCameraOnWalk(value)
+		end
+	},
+	dashWalking = {
+		value = false,
+		action = function(value)
+			g_game.setWalkMaxSteps(value and 2 or 1)
 		end
 	},
 	enableHighlightMouseTarget = {
