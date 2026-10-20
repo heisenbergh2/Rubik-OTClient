@@ -154,7 +154,10 @@ void Client::registerLuaFunctions()
     g_lua.bindSingletonFunction("g_map", "addAnimatedText", &Map::addAnimatedText, &g_map);
     g_lua.bindSingletonFunction("g_map", "getThing", &Map::getThing, &g_map);
     g_lua.bindSingletonFunction("g_map", "removeThingByPos", &Map::removeThingByPos, &g_map);
-    g_lua.bindSingletonFunction("g_map", "removeThing", &Map::removeThing, &g_map);
+    // Keep Lua's original one-argument API. The protocol also uses the
+    // packet-position overload internally to remove stale map entries.
+    g_lua.bindSingletonFunction("g_map", "removeThing",
+        static_cast<bool (Map::*)(const ThingPtr&)>(&Map::removeThing), &g_map);
     g_lua.bindSingletonFunction("g_map", "removeThingColor", &Map::removeThingColor, &g_map);
     g_lua.bindSingletonFunction("g_map", "colorizeThing", &Map::colorizeThing, &g_map);
     g_lua.bindSingletonFunction("g_map", "clean", &Map::clean, &g_map);
