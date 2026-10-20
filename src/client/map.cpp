@@ -289,6 +289,24 @@ bool Map::removeThing(const ThingPtr& thing)
     return false;
 }
 
+bool Map::removeThing(const ThingPtr& thing, const Position& pos)
+{
+    if (!thing || !pos.isMapPosition())
+        return false;
+
+    if (thing->isMissile())
+        return removeThing(thing);
+
+    if (const auto& tile = getTile(pos)) {
+        if (tile->removeThing(thing)) {
+            notificateTileUpdate(pos, thing, Otc::OPERATION_REMOVE);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool Map::removeThingByPos(const Position& pos, const int16_t stackPos)
 {
     if (const auto& tile = getTile(pos))

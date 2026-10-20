@@ -429,7 +429,8 @@ public:
 
     Outfit getOutfit(const InputMessagePtr& msg, bool parseMount = true) const;
     ThingPtr getThing(const InputMessagePtr& msg);
-    ThingPtr getMappedThing(const InputMessagePtr& msg) const;
+    ThingPtr getMappedThing(const InputMessagePtr& msg, Position* packetPosition = nullptr,
+                            int* packetStackPos = nullptr) const;
     CreaturePtr getCreature(const InputMessagePtr& msg, int type = 0) const;
     ItemPtr getItem(const InputMessagePtr& msg, int id = 0);
     Position getPosition(const InputMessagePtr& msg);

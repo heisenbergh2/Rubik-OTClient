@@ -127,6 +127,8 @@ public:
     ThingPtr getThing(const Position& pos, int16_t stackPos);
     void addThing(const ThingPtr& thing, const Position& pos, int16_t stackPos = -1);
     bool removeThing(const ThingPtr& thing);
+    // A map packet's source tile is authoritative; a Thing can already carry a newer position.
+    bool removeThing(const ThingPtr& thing, const Position& pos);
     bool removeThingByPos(const Position& pos, int16_t stackPos);
 
     void addStaticText(const StaticTextPtr& txt, const Position& pos);

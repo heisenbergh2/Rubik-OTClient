@@ -1578,7 +1578,9 @@ void ProtocolGame::parseTileAddThing(const InputMessagePtr& msg)
 
 void ProtocolGame::parseTileTransformThing(const InputMessagePtr& msg)
 {
-    const auto& thing = getMappedThing(msg);
+    Position packetPosition;
+    int packetStackPos = -1;
+    const auto& thing = getMappedThing(msg, &packetPosition, &packetStackPos);
     const auto& newThing = getThing(msg);
 
     if (!thing) {
@@ -1586,10 +1588,13 @@ void ProtocolGame::parseTileTransformThing(const InputMessagePtr& msg)
         return;
     }
 
-    const auto& pos = thing->getServerPosition();
-    const int stackPos = thing->getStackPos();
+    // The packet's tile is the exact source of this transform.  Do not let an earlier
+    // movement's cached Thing position move the replacement (notably a creature corpse).
+    const bool hasPacketPosition = packetStackPos >= 0;
+    const auto& pos = hasPacketPosition ? packetPosition : thing->getServerPosition();
+    const int stackPos = hasPacketPosition ? packetStackPos : thing->getStackPos();
 
-    if (!g_map.removeThing(thing)) {
+    if (!(hasPacketPosition ? g_map.removeThing(thing, pos) : g_map.removeThing(thing))) {
         g_logger.traceError("ProtocolGame::parseTileTransformThing: unable to remove thing");
         return;
     }
@@ -1599,19 +1604,24 @@ void ProtocolGame::parseTileTransformThing(const InputMessagePtr& msg)
 
 void ProtocolGame::parseTileRemoveThing(const InputMessagePtr& msg) const
 {
-    const auto& thing = getMappedThing(msg);
+    Position packetPosition;
+    int packetStackPos = -1;
+    const auto& thing = getMappedThing(msg, &packetPosition, &packetStackPos);
     if (!thing) {
         g_logger.traceError("ProtocolGame::parseTileRemoveThing: no thing");
         return;
     }
 
-    if (!g_map.removeThing(thing))
+    const bool removed = packetStackPos >= 0 ? g_map.removeThing(thing, packetPosition) : g_map.removeThing(thing);
+    if (!removed)
         g_logger.traceError("ProtocolGame::parseTileRemoveThing: unable to remove thing");
 }
 
 void ProtocolGame::parseCreatureMove(const InputMessagePtr& msg)
 {
-    const auto& thing = getMappedThing(msg);
+    Position packetPosition;
+    int packetStackPos = -1;
+    const auto& thing = getMappedThing(msg, &packetPosition, &packetStackPos);
     const auto& newPos = getPosition(msg);
 
     if (!thing || !thing->isCreature()) {
@@ -1619,7 +1629,8 @@ void ProtocolGame::parseCreatureMove(const InputMessagePtr& msg)
         return;
     }
 
-    if (!g_map.removeThing(thing)) {
+    const bool removed = packetStackPos >= 0 ? g_map.removeThing(thing, packetPosition) : g_map.removeThing(thing);
+    if (!removed) {
         g_logger.traceError("ProtocolGame::parseCreatureMove: unable to remove creature");
         return;
     }
@@ -4159,7 +4170,8 @@ ThingPtr ProtocolGame::getThing(const InputMessagePtr& msg)
     return getItem(msg, id); // item
 }
 
-ThingPtr ProtocolGame::getMappedThing(const InputMessagePtr& msg) const
+ThingPtr ProtocolGame::getMappedThing(const InputMessagePtr& msg, Position* packetPosition,
+                                      int* packetStackPos) const
 {
     const uint16_t x = msg->getU16();
     if (x != 0xffff) {
@@ -4170,6 +4182,11 @@ ThingPtr ProtocolGame::getMappedThing(const InputMessagePtr& msg) const
         assert(stackpos != UINT8_MAX);
 
         const Position& pos{ x, y, z };
+        if (packetPosition)
+            *packetPosition = pos;
+        if (packetStackPos)
+            *packetStackPos = stackpos;
+
         if (const auto& thing = g_map.getThing(pos, stackpos)) {
             return thing;
         }

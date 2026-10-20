@@ -27,6 +27,8 @@
 #include "staticdata.h"
 #include <framework/graphics/declarations.h>
 
+#include <atomic>
+
 class LightView final : public LuaObject
 {
 public:
@@ -136,4 +138,9 @@ private:
     TexturePtr m_texture;
     LightData m_lightData;
     std::array<std::vector<uint8_t>, 2> m_pixels;
+
+    // Each MapView owns a different light texture.  This must therefore be per-view too:
+    // a static flag lets one view consume another one's pending upload, leaving the latter
+    // briefly sampling an uninitialised/old texture as black tiles.
+    std::atomic_bool m_pixelsPendingUpload{ false };
 };

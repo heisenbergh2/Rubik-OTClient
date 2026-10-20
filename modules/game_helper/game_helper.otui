@@ -4522,7 +4522,7 @@ PainelCavebot < Panel
 // Janela do Helper
 HelperWindow < MainWindow
   id: helperWindow
-  !text: tr('Bad Boys OT - Helper')
+  !text: tr('Helper')
   size: 620 511
   text-offset: -5 5
   clipping: false

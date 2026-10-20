@@ -52,7 +52,11 @@ void UIGraph::drawSelf(const DrawPoolType drawPane)
         for (auto& graph : m_graphs) {
             if (!graph.visible) continue;
 
-            g_drawPool.addAction([points = graph.points, width = graph.width, color = graph.lineColor] {
+            // Keep the GL fallback, but describe the same polyline to the compiled renderer.
+            // An opaque action makes the whole FOREGROUND pool fall back to legacy drawing,
+            // which can swap a Cyclopedia frame between two rendering paths.
+            g_drawPool.addLineStrip(graph.points, graph.width, graph.lineColor,
+                                    [points = graph.points, width = graph.width, color = graph.lineColor] {
                 static std::vector<float> vertices;
                 vertices.resize(points.size() * 2);
                 int i = 0;
@@ -72,7 +76,10 @@ void UIGraph::drawSelf(const DrawPoolType drawPane)
 
             if (m_showInfo && isHovered()) {
                 updateGraph(graph, updated);
-                g_drawPool.addAction([line = graph.infoLine, color = graph.infoLineColor] {
+                const auto line = graph.infoLine;
+                const std::vector<Point> points{ line[0], line[1] };
+                g_drawPool.addLineStrip(points, 1, graph.infoLineColor,
+                                        [line, color = graph.infoLineColor] {
                     g_painter->setColor(color);
                     const std::vector vertices = {
                         static_cast<float>(line[0].x), static_cast<float>(line[0].y),

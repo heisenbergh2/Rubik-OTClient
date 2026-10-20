@@ -2567,6 +2567,10 @@ function showTab(tab)
 		end
 	end
 
+	-- Cavebot refreshes several UI widgets when it becomes visible. Re-apply the local
+	-- player's outfit afterwards so the character card is repainted on every tab switch.
+	-- This also keeps the preview correct when the outfit changed while Helper was open.
+	refreshHelperCharacterCard()
 	refreshHelperUiLanguage(false)
 end
 

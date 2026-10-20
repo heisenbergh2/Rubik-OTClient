@@ -112,8 +112,6 @@ void LightView::markIndoor(const Point& pos, const bool indoor)
 
 void LightView::draw(const Rect& dest, const Rect& src)
 {
-    static std::atomic_bool updatePixel;
-
     m_pool->getHashController().put(src.hash());
     m_pool->getHashController().put(m_globalLightColor.hash());
     m_pool->getHashController().put(m_indoorLightColor.hash());
@@ -134,7 +132,7 @@ void LightView::draw(const Rect& dest, const Rect& src)
 
         SpinLock::Guard guard(m_pool->getThreadLock());
         m_pixels[0].swap(m_pixels[1]);
-        updatePixel.store(true, std::memory_order_relaxed);
+        m_pixelsPendingUpload.store(true, std::memory_order_release);
 
         // The same upload, stated as data. Declared inside this branch so the compiled frame
         // uploads exactly in the frames GL uploads in - not every frame.
@@ -151,10 +149,10 @@ void LightView::draw(const Rect& dest, const Rect& src)
     // lambda's real geometry comes from updateCoords() on the render thread, and a compiler
     // never runs the lambda.
     g_drawPool.addLightOverlay(m_texture, dest, src, m_tileSize, [=, this] {
-        if (updatePixel.load(std::memory_order_relaxed)) {
+        if (m_pixelsPendingUpload.load(std::memory_order_acquire)) {
             SpinLock::Guard guard(m_pool->getThreadLock());
             m_texture->updatePixels(m_pixels[1].data());
-            updatePixel.store(false, std::memory_order_relaxed);
+            m_pixelsPendingUpload.store(false, std::memory_order_release);
         }
 
         updateCoords(dest, src);
