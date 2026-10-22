@@ -350,16 +350,6 @@ void MapView::drawFloor()
 
     const auto& cameraPosition = m_posInfo.camera;
 
-    // The framebuffer includes one extra tile around the visible map so a
-    // walking camera can sample beyond the centred view.  Tile::canRender
-    // normally trims that extra border, but its directional viewport is based
-    // on whole tiles while the camera moves in pixels.  At the north and west
-    // edge this could leave the sampled strip with no ground drawn into it,
-    // which appeared as intermittent black lines.  Draw the cached border for
-    // the duration of a camera walk; the normal stationary viewport culling
-    // remains in place.
-    const bool drawWalkingViewportEdge = isFollowingCreature() && m_followingCreature->isWalking();
-
     const uint32_t flags = Otc::DrawThings;
 
     // Scratch space for one diagonal run, hoisted out of the floor loop: it was allocating and
@@ -387,7 +377,7 @@ void MapView::drawFloor()
             const auto& tile = map.tiles[i];
             uint32_t tileFlags = flags;
 
-            if (!m_drawViewportEdge && !drawWalkingViewportEdge && !tile->canRender(tileFlags, cameraPosition, m_viewport))
+            if (!m_drawViewportEdge && !tile->canRender(tileFlags, cameraPosition, m_viewport))
                 continue;
 
             walkingTiles.emplace_back(tile.get());
@@ -1148,7 +1138,13 @@ void MapView::setVisibleDimension(const Size& visibleDimension)
 
     const auto& awareRangeSize = Size(g_map.getAwareRange().left * 2, g_map.getAwareRange().top * 2);
 
-    m_drawViewportEdge = m_forceDrawViewportEdge;
+    // The framebuffer deliberately includes a three-tile margin around the
+    // visible map. Camera movement is pixel-based, but Tile::canRender uses
+    // whole-tile viewport limits. Culling that margin can leave an unpainted
+    // strip at the north or west edge for a frame when pre-walk advances the
+    // camera. Keep the margin drawn for every map frame; it is already cached
+    // and avoids coupling correct rendering to movement state timing.
+    m_drawViewportEdge = true;
     if (visibleDimension.width() > awareRangeSize.width() || visibleDimension.height() > awareRangeSize.height()) {
         if (m_limitVisibleDimension)
             return;
