@@ -23,6 +23,8 @@
 #include "garbagecollection.h"
 
 #include "client/const.h"
+#include "client/game.h"
+#include "client/localplayer.h"
 #include "client/spriteappearances.h"
 #include "client/thingtype.h"
 #include "client/thingtypemanager.h"
@@ -64,7 +66,12 @@ void GarbageCollection::poll() {
     if (canCheck(pendingimage_timer, PENDING_IMAGE_TIME))
         pendingImages();
 
-    if (canCheck(lua_timer, LUA_TIME))
+    // A full collect runs two lua_gc passes and can block the event thread for
+    // >100 ms. Defer it while the player is moving so it cannot land in the
+    // middle of a walk frame (visible as a torn frame with vsync off).
+    const auto& localPlayer = g_game.getLocalPlayer();
+    const bool playerMoving = localPlayer && (localPlayer->isWalking() || localPlayer->isPreWalking() || localPlayer->isAutoWalking());
+    if (!playerMoving && canCheck(lua_timer, LUA_TIME))
         lua();
 
     if (canCheck(spritesheet_timer, SPRITESHEET_TIME))
