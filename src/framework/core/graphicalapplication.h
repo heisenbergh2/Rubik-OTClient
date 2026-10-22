@@ -38,7 +38,6 @@ protected:
     virtual void draw(DrawPoolType type) = 0;
 
     virtual bool canDraw(DrawPoolType type) const = 0;
-    virtual bool isOnline() = 0;
     virtual bool isLoadingAsyncTexture() = 0;
     virtual bool isUsingProtobuf() = 0;
     virtual void onLoadingAsyncTextureChanged(bool loadingAsync) = 0;

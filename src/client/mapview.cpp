@@ -1138,13 +1138,7 @@ void MapView::setVisibleDimension(const Size& visibleDimension)
 
     const auto& awareRangeSize = Size(g_map.getAwareRange().left * 2, g_map.getAwareRange().top * 2);
 
-    // The framebuffer deliberately includes a three-tile margin around the
-    // visible map. Camera movement is pixel-based, but Tile::canRender uses
-    // whole-tile viewport limits. Culling that margin can leave an unpainted
-    // strip at the north or west edge for a frame when pre-walk advances the
-    // camera. Keep the margin drawn for every map frame; it is already cached
-    // and avoids coupling correct rendering to movement state timing.
-    m_drawViewportEdge = true;
+    m_drawViewportEdge = m_forceDrawViewportEdge;
     if (visibleDimension.width() > awareRangeSize.width() || visibleDimension.height() > awareRangeSize.height()) {
         if (m_limitVisibleDimension)
             return;

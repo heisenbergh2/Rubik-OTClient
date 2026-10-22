@@ -142,11 +142,6 @@ bool Client::canDraw(const DrawPoolType type) const
     }
 }
 
-bool Client::isOnline()
-{
-    return g_game.isOnline();
-}
-
 bool Client::isLoadingAsyncTexture()
 {
     return g_game.isUsingProtobuf();
