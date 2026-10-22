@@ -142,6 +142,7 @@ public:
     Color getStaticSquareColor() { return m_staticSquareColor; }
 
     ticks_t getWalkTicksElapsed() { return m_walkTimer.ticksElapsed(); }
+    uint8_t getWalkedPixels() { return m_walkedPixels; }
 
     bool isPassable() const { return m_passable; }
     bool isWalking() { return m_walking; }

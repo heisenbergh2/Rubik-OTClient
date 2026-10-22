@@ -34,7 +34,9 @@
 #include "framework/graphics/declarations.h"
 #include "framework/luaengine/luaobject.h"
 
+#include <atomic>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 
 #ifdef FRAMEWORK_PROTOBUF
@@ -180,8 +182,8 @@ public:
     bool isCreature() const { return m_category == ThingCategoryCreature; }
 
     bool hasTexture() const {
-        std::scoped_lock loadingLock(m_loadingMutex);
-        return !m_textureData.empty() && m_textureData[0].source != nullptr;
+        return !m_textureData.empty() &&
+            std::atomic_load_explicit(&m_textureData[0].source, std::memory_order_acquire) != nullptr;
     }
 
     // Memory diagnostics: thing textures are created DIRECTLY (make_shared<Texture>), bypassing
@@ -201,7 +203,7 @@ public:
             return;
 
         for (auto& data : m_textureData) {
-            data.source = nullptr;
+            std::atomic_store_explicit(&data.source, TexturePtr{}, std::memory_order_release);
         }
     }
 
@@ -215,6 +217,7 @@ public:
     void setPathable(bool var);
     int getExactHeight();
     TexturePtr getTexture(int animationPhase);
+    TexturePtr getDrawTexture(int& animationPhase);
 
     std::string getName() { return m_name; }
     std::string getDescription() { return m_description; }

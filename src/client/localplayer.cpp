@@ -28,7 +28,21 @@
 #include "map.h"
 #include "tile.h"
 #include "framework/core/clock.h"
+#include "framework/core/configmanager.h"
 #include "framework/core/eventdispatcher.h"
+#include "framework/core/logger.h"
+
+namespace
+{
+bool isWalkDebugEnabled()
+{
+    const auto settings = g_configs.getSettings();
+    return settings && settings->getValue("debugWalking") == "true";
+}
+
+ticks_t s_lastWalkCalLog = 0;
+ticks_t s_lastWalkPacket = 0;
+}
 
 void LocalPlayer::lockWalk(const uint16_t millis)
 {
@@ -55,11 +69,10 @@ bool LocalPlayer::canWalk(const bool ignoreLock)
     // Handle ongoing movement cases
     if (isWalking()) {
         if (isAutoWalking()) return true;  // Allow auto-walking
-        // Keyboard walking must be allowed to queue the next predicted step too.
-        // Blocking every pre-walk here makes fast characters wait for one server
-        // acknowledgement per tile, while click-to-walk remains smooth because it
-        // submits a path. The queue is still bounded by getWalkMaxSteps() above.
-        if (isPreWalking()) return g_game.getWalkMaxSteps() > 0;
+        // Never start another step while the current one is animating. Sending
+        // the packet early makes the server ACK arrive mid-animation, which
+        // restarts Creature::walk and snaps both the sprite offset and camera.
+        return false;
     }
 
     // allow only if walk done, ex. diagonals may need additional ticks before taking another step
@@ -70,7 +83,19 @@ void LocalPlayer::walk(const Position& oldPos, const Position& newPos)
 {
     m_autoWalkRetries = 0;
 
-    if (isPreWalking() && newPos == m_preWalks.front()) {
+    const auto now = g_clock.millis();
+    const bool matchedPreWalk = isPreWalking() && newPos == m_preWalks.front();
+    if (isWalkDebugEnabled()) {
+        const auto packetDelta = s_lastWalkPacket > 0 ? now - s_lastWalkPacket : 0;
+        g_logger.info("[walkserver] ack old={} new={} server={} visual={} pre={} front={} match={} walking={} elapsed={} calc={} packetDelta={}",
+            oldPos.toString(), newPos.toString(), m_position.toString(), getPosition().toString(),
+            static_cast<int>(m_preWalks.size()),
+            isPreWalking() ? m_preWalks.front().toString() : std::string("none"),
+            matchedPreWalk, isWalking(), m_walkTimer.ticksElapsed(), getStepDuration(), packetDelta);
+    }
+    s_lastWalkPacket = now;
+
+    if (matchedPreWalk) {
         m_preWalks.pop_front();
         return;
     }
@@ -87,7 +112,16 @@ void LocalPlayer::preWalk(Otc::Direction direction)
     m_lastMapDuration = -1;
 
     const auto& oldPos = getPosition();
-    Creature::walk(oldPos, m_preWalks.emplace_back(oldPos.translatedToDirection(direction)));
+    const auto newPos = oldPos.translatedToDirection(direction);
+    m_preWalks.push_back(newPos);
+
+    if (isWalkDebugEnabled()) {
+        g_logger.info("[walkcal] prewalk dir={} from={} to={} server={} pre={} walking={} elapsed={}",
+            static_cast<int>(direction), oldPos.toString(), newPos.toString(), m_position.toString(),
+            static_cast<int>(m_preWalks.size()), isWalking(), m_walkTimer.ticksElapsed());
+    }
+
+    Creature::walk(oldPos, newPos);
     Creature::onPositionChange(getLastStepToPosition(), getLastStepFromPosition());
     registerAdjustInvalidPosEvent();
 }
@@ -103,6 +137,18 @@ void LocalPlayer::onWalking() {
                     break;
                 }
             }
+        }
+    }
+
+    if (m_walking && isWalkDebugEnabled()) {
+        const auto now = g_clock.millis();
+        if (now - s_lastWalkCalLog >= 250) {
+            s_lastWalkCalLog = now;
+            g_logger.info("[walkcal] t={} server={} visual={} pre={} walking={} serverWalk={} timer={} pixels={} offset={},{} progress={:.3f} calc={} to={}",
+                now, m_position.toString(), getPosition().toString(), static_cast<int>(m_preWalks.size()),
+                isWalking(), m_serverWalk, m_walkTimer.ticksElapsed(), static_cast<int>(getWalkedPixels()),
+                m_walkOffset.x, m_walkOffset.y, getStepProgress(), getStepDuration(),
+                getLastStepToPosition().toString());
         }
     }
 }
@@ -236,6 +282,13 @@ void LocalPlayer::stopAutoWalk()
 
 void LocalPlayer::terminateWalk()
 {
+    if (isWalkDebugEnabled()) {
+        g_logger.info("[walkcal] terminate server={} visual={} pre={} elapsed={} pixels={} offset={},{} calc={}",
+            m_position.toString(), getPosition().toString(), static_cast<int>(m_preWalks.size()),
+            m_walkTimer.ticksElapsed(), static_cast<int>(getWalkedPixels()), m_walkOffset.x, m_walkOffset.y,
+            getStepDuration());
+    }
+
     Creature::terminateWalk();
     m_serverWalk = false;
     callLuaField("onWalkFinish");
