@@ -38,8 +38,12 @@ local featureEvents = {
         -- g_game.enableFeature(GameAllowCustomBotScripts)
         g_game.enableFeature(GameFormatCreatureName)
 
-        -- For Walk
-        g_game.enableFeature(GameAllowPreWalk)
+        -- Keep movement authoritative to the server.  The previous local
+        -- prediction advanced the character before a 15.30 server confirmed
+        -- the step; when the confirmation was delayed or rejected, the client
+        -- visibly snapped one sqm back.  Walking continues as soon as each
+        -- confirmed step finishes, without the false forward/backward motion.
+        g_game.disableFeature(GameAllowPreWalk)
         g_game.enableFeature(GameMapCache)
         -- g_game.enableFeature(GameSmoothWalkElevation)
 

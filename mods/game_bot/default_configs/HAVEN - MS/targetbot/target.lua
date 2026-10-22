@@ -43,18 +43,20 @@ targetbotMacro = macro(100, function()
   local targets = 0
   local highestPriorityParams = nil
   for i, creature in ipairs(creatures) do
-    local path = findPath(player:getPosition(), creature:getPosition(), 7, {ignoreLastCreature=true, ignoreNonPathable=true, ignoreCost=true})
-    if creature:isMonster() and path then
-      local params = TargetBot.Creature.calculateParams(creature, path) -- return {craeture, config, danger, priority}
-      dangerLevel = dangerLevel + params.danger
-      if params.priority > 0 then
-        targets = targets + 1
-        if params.priority > highestPriority then
-          highestPriority = params.priority
-          highestPriorityParams = params
-        end
-        if ui.editor.debug:isOn() then
-          creature:setText(params.config.name .. "\n" .. params.priority)
+    if creature:isMonster() then
+      local path = findPath(pos, creature:getPosition(), 7, {ignoreLastCreature=true, ignoreNonPathable=true, ignoreCost=true})
+      if path then
+        local params = TargetBot.Creature.calculateParams(creature, path) -- return {craeture, config, danger, priority}
+        dangerLevel = dangerLevel + params.danger
+        if params.priority > 0 then
+          targets = targets + 1
+          if params.priority > highestPriority then
+            highestPriority = params.priority
+            highestPriorityParams = params
+          end
+          if ui.editor.debug:isOn() then
+            creature:setText(params.config.name .. "\n" .. params.priority)
+          end
         end
       end
     end
