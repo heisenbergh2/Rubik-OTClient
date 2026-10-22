@@ -1362,12 +1362,6 @@ return {
 			g_gameConfig.setStabilizeCameraOnWalk(value)
 		end
 	},
-	dashWalking = {
-		value = false,
-		action = function(value)
-			g_game.setWalkMaxSteps(value and 2 or 1)
-		end
-	},
 	enableHighlightMouseTarget = {
 		deferAction = true,
 		value = true,

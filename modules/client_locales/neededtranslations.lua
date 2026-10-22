@@ -138,7 +138,6 @@ neededTranslations = {
 	"Edit VIP list entry",
 	"Enable audio",
 	"Enable chat mode",
-	"Enable dash walking",
 	"Enable lights",
 	"Enable music sound",
 	"Enable Shared Experience",
