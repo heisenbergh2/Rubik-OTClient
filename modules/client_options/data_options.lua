@@ -822,7 +822,7 @@ return {
 		end
 	},
 	limitVisibleDimension = {
-		value = false,
+		value = true,
 		action = function(value, options, controller, panels, extraWidgets)
 			panels.gameMapPanel:setLimitVisibleDimension(value)
 		end
@@ -1362,6 +1362,12 @@ return {
 			g_gameConfig.setStabilizeCameraOnWalk(value)
 		end
 	},
+	dashWalking = {
+		value = false,
+		action = function(value)
+			g_game.setWalkMaxSteps(value and 2 or 1)
+		end
+	},
 	enableHighlightMouseTarget = {
 		deferAction = true,
 		value = true,
@@ -1430,19 +1436,6 @@ return {
 				if combo then
 					combo:setCurrentOptionByData(value, true)
 				end
-			end
-		end
-	},
-	hdGraphics = {
-		value = false,
-		action = function(value, options, controller, panels, extraWidgets)
-			if g_sprites and g_sprites.setScaleFactor then
-				-- Keep the native Tibia sprite grid at 32x32. Upscaling the
-				-- sprite source to 64x64 corrupts outfit masks on some creatures.
-				g_sprites.setScaleFactor(1)
-			end
-			if panels and panels.gameMapPanel then
-				panels.gameMapPanel:setAntiAliasingMode(options.antialiasingMode.value)
 			end
 		end
 	},

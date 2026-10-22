@@ -7463,11 +7463,16 @@ void ProtocolGame::parseHighscores(const InputMessagePtr& msg)
 {
     const bool isEmpty = static_cast<bool>(msg->getU8());
     if (isEmpty) {
+        g_game.processHighscore({}, "", 0, 0, {}, {}, 1, 1, {}, 0);
         return;
     }
 
-    msg->getU8(); // skip (0x01)
-    const auto& serverName = msg->getString();
+    const uint8_t worldCount = msg->getU8();
+    std::vector<std::string> worlds;
+    worlds.reserve(worldCount);
+    for (uint8_t i = 0; i < worldCount; ++i) {
+        worlds.emplace_back(msg->getString());
+    }
     const auto& world = msg->getString();
     const uint8_t worldType = msg->getU8();
     const uint8_t battlEye = msg->getU8();
@@ -7519,7 +7524,7 @@ void ProtocolGame::parseHighscores(const InputMessagePtr& msg)
     msg->getU8(); // skip HIGHSCORES_CATEGORIES[params.category].type or 0x00
     const uint32_t entriesTs = msg->getU32(); // last update
 
-    g_game.processHighscore(serverName, world, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs);
+    g_game.processHighscore(worlds, world, worldType, battlEye, vocations, categories, page, totalPages, highscores, entriesTs);
 }
 
 void ProtocolGame::parseWeaponProficiencyInfo(const InputMessagePtr& msg)

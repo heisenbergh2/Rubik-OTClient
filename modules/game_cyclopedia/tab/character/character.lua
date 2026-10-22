@@ -106,6 +106,10 @@ function Cyclopedia.applyCharacterOutfitWidgets()
 	end
 
 	local outfit = Cyclopedia.Character.InspectionOutfit
+	if not outfit or (outfit.type or 0) == 0 then
+		local player = g_game.getLocalPlayer()
+		outfit = player and player:getOutfit()
+	end
 
 	if not outfit or (outfit.type or 0) == 0 then
 		return

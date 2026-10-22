@@ -15,7 +15,7 @@ jobs:
         run: sudo apt-get update
 
       - name: Setup Lua
-        run: sudo apt-get install -y lua5.1 liblua5.1-0-dev
+        run: sudo apt-get install -y lua5.1 liblua5.1-0-dev luajit
 
       - name: Check out code.
         uses: actions/checkout@v7
@@ -28,8 +28,11 @@ jobs:
 
       - name: Check Lua source syntax
         run: |
-          luac5.1 -p init.lua otclientrc.lua meta.lua luajit_compile.lua
-          find data modules mods tools -name '*.lua' -print0 | xargs -0 -n1 luac5.1 -p
+          # The client uses LuaJIT, including its supported goto syntax.
+          for file in init.lua otclientrc.lua meta.lua luajit_compile.lua; do
+            luajit -b "$file" /dev/null
+          done
+          find data modules mods tools -name '*.lua' -print0 | xargs -0 -n1 sh -c 'luajit -b "$1" /dev/null' sh
 
       - name: Test OTUI editor parsing and edit safety
         run: lua5.1 tests/lua/dev_otui_test.lua
@@ -39,3 +42,6 @@ jobs:
 
       - name: Test options and runtime packaging contracts
         run: lua5.1 tests/lua/options_contract_test.lua
+
+      - name: Test secure script loading, config extraction and Highscores lifecycle
+        run: lua5.1 tests/lua/security_regression_test.lua

@@ -17,7 +17,7 @@ local enableButton = nil
 local executeEvent = nil
 local statusLabel = nil
 
-local configManagerUrl = "http://otclient.ovh/configs.php"
+local configManagerUrl = "https://otclient.ovh/configs.php"
 
 function init()
   dofile("executor")
@@ -390,7 +390,7 @@ end
 function uploadConfig()
   local config = editWindow.manager.upload.config:getCurrentOption().text
   local archive = compressConfig(config)
-  if not archive then
+  if not archive or archive:len() == 0 then
       return displayErrorBox(tr("Config upload failed"), tr("Config %s is invalid (can't be compressed)", config))
   end
   if archive:len() > 1024 * 1024 then
@@ -457,10 +457,18 @@ function compressConfig(configName)
 end
 
 function decompressConfig(configName, archive)
+  if type(configName) ~= "string" or not configName:match("^[%w_ %.%-]+$") or
+      #configName > 64 or configName:sub(-1) == " " or configName:sub(-1) == "." then
+    return onError("Invalid config name: use letters, numbers, spaces, periods, underscores or hyphens")
+  end
+  local files = g_resources.decompressArchive(archive)
+  if not files or not next(files) then
+    return onError("Downloaded config archive is empty or invalid")
+  end
+
   if g_resources.directoryExists("/bot/" .. configName) then
     g_resources.deleteFile("/bot/" .. configName) -- also delete dirs
   end
-  local files = g_resources.decompressArchive(archive)
   g_resources.makeDir("/bot/" .. configName)
   if not g_resources.directoryExists("/bot/" .. configName) then
     return onError("Can't create /bot/" .. configName .. " directory in " .. g_resources.getWriteDir())
@@ -479,7 +487,7 @@ function decompressConfig(configName, archive)
         end
       end
     end
-    g_resources.writeFileContents("/bot/" .. configName .. file, contents)
+    g_resources.writeFileContents("/bot/" .. configName .. "/" .. file, contents)
   end
 end
 

@@ -35,6 +35,7 @@ public:
     void draw(DrawPoolType type) override;
 
     bool canDraw(DrawPoolType type) const override;
+    bool isOnline() override;
     bool isLoadingAsyncTexture() override;
     bool isUsingProtobuf() override;
 

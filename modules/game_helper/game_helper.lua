@@ -2982,7 +2982,6 @@ local function validateHelperRuntime()
 end
 
 function init()
-	g_ui.importStyle("/game_actionbar/helper_actionslot_compat")
 	g_ui.importStyle("game_helper")
 	connect(g_game, {
 		onGameEnd = onGameEnd,

@@ -34,6 +34,11 @@
 #include "framework/graphics/declarations.h"
 #include "framework/luaengine/luaobject.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+
 #ifdef FRAMEWORK_PROTOBUF
 using namespace otclient::protobuf;
 #endif
@@ -176,7 +181,10 @@ public:
     bool isMissile() const { return m_category == ThingCategoryMissile; }
     bool isCreature() const { return m_category == ThingCategoryCreature; }
 
-    bool hasTexture() const { return !m_textureData.empty() && m_textureData[0].source != nullptr; }
+    bool hasTexture() const {
+        return !m_textureData.empty() &&
+            std::atomic_load_explicit(&m_textureData[0].source, std::memory_order_acquire) != nullptr;
+    }
 
     // Memory diagnostics: thing textures are created DIRECTLY (make_shared<Texture>), bypassing
     // the texture manager, so a counter walking g_textures.m_textures does not see them at all.
@@ -184,11 +192,18 @@ public:
     // pendingBytes = CPU-side pixel copies that have not yet been uploaded to the GPU.
     // definition in thingtype.cpp - here Texture is only forward-declared
     void accumulateTextureMemory(size_t& totalBytes, size_t& pendingBytes, size_t& textureCount) const;
-    const Timer getLastTimeUsage() const { return m_lastTimeUsage; }
+    const Timer getLastTimeUsage() const {
+        std::scoped_lock loadingLock(m_loadingMutex);
+        return m_lastTimeUsage;
+    }
 
     void unload() {
+        std::scoped_lock loadingLock(m_loadingMutex);
+        if (m_loading.load(std::memory_order_acquire))
+            return;
+
         for (auto& data : m_textureData) {
-            data.source = nullptr;
+            std::atomic_store_explicit(&data.source, TexturePtr{}, std::memory_order_release);
         }
     }
 
@@ -201,7 +216,8 @@ public:
     float getOpacity() { return m_opacity; }
     void setPathable(bool var);
     int getExactHeight();
-    const TexturePtr& getTexture(int animationPhase);
+    TexturePtr getTexture(int animationPhase);
+    TexturePtr getDrawTexture(int& animationPhase);
 
     std::string getName() { return m_name; }
     std::string getDescription() { return m_description; }
@@ -275,6 +291,8 @@ private:
     std::vector<TextureData> m_textureData;
 
     std::atomic_bool m_loading{ false };
+    mutable std::mutex m_loadingMutex;
+    std::condition_variable m_loadingCondition;
 
     Timer m_lastTimeUsage;
 

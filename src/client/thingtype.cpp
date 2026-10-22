@@ -53,22 +53,25 @@ namespace {
 #ifdef FRAMEWORK_PROTOBUF
 void ThingType::accumulateTextureMemory(size_t& totalBytes, size_t& pendingBytes, size_t& textureCount) const
 {
+    std::scoped_lock loadingLock(m_loadingMutex);
+
     for (const auto& data : m_textureData) {
-        if (!data.source)
+        const auto source = std::atomic_load_explicit(&data.source, std::memory_order_acquire);
+        if (!source)
             continue;
 
         ++textureCount;
 
-        const auto& size = data.source->getSize();
+        const auto& size = source->getSize();
         const size_t bytes = static_cast<size_t>(size.width()) * size.height() * 4;
 
         // We count only RESIDENT bytes: GL storage (m_id != 0) or CPU pixel copies.
         // In Vulkan mode the texture object has neither (the pixels live
         // in the Vulkan atlas) - summing the nominal w*h*4 produced a phantom ~46 MB.
-        if (!data.source->isEmpty())
+        if (!source->isEmpty())
             totalBytes += bytes;
 
-        if (data.source->hasPendingImage()) {
+        if (source->hasPendingImage()) {
             totalBytes += bytes;
             pendingBytes += bytes;
         }
@@ -802,7 +805,7 @@ void ThingType::draw(const Point& dest, const int layer, const int xPattern, con
     // this line fixes a bug that makes them disappear while moving
     int animationFrameId = animationPhase % m_animationPhases;
 
-    const auto& texture = getTexture(animationFrameId);
+    const auto& texture = getDrawTexture(animationFrameId);
     if (!texture) {
         // Reset any pending onlyOnce state to prevent stale opacity/shader
         // from affecting subsequent draws when texture is still loading
@@ -845,45 +848,95 @@ void ThingType::draw(const Point& dest, const int layer, const int xPattern, con
     }
 }
 
-const TexturePtr& ThingType::getTexture(const int animationPhase)
+TexturePtr ThingType::getTexture(const int animationPhase)
 {
-    if (m_null) return m_textureNull;
-
-    m_lastTimeUsage.restart();
+    if (m_null || animationPhase < 0 || animationPhase >= static_cast<int>(m_textureData.size()))
+        return m_textureNull;
 
     auto& textureData = m_textureData[animationPhase];
+    m_lastTimeUsage.restart();
 
-    if (textureData.source)
-        return textureData.source;
+    // A phase that is already built is always drawable, even while another phase is being
+    // decoded by the async loader (which holds m_loadingMutex for the whole batch). Checking
+    // the source before taking the lock prevents the whole thing from blinking while a new
+    // walk frame is prepared.
+    if (const auto source = std::atomic_load_explicit(&textureData.source, std::memory_order_acquire))
+        return source;
 
-    bool expected = false;
-    if (m_loading.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-        bool async = g_app.isLoadingAsyncTexture();
-        if (g_game.isUsingProtobuf() && g_drawPool.getCurrentType() == DrawPoolType::FOREGROUND)
-            async = false;
+    const bool foregroundPreview = g_game.isUsingProtobuf() && g_drawPool.getCurrentType() == DrawPoolType::FOREGROUND;
 
-        if (!async) {
-            loadTexture(animationPhase);
-            m_loading.store(false, std::memory_order_release);
-            return textureData.source;
-        }
-
-        auto action = [this] {
-            for (int_fast8_t i = -1; ++i < m_animationPhases;)
-                loadTexture(i);
-            m_loading.store(false, std::memory_order_release);
-        };
-
-        g_asyncDispatcher.detach_task(std::move(action));
+    // The map must never wait for disk/decompression work. Foreground previews may wait for
+    // an already-running load so they do not alternate between a real sprite and an empty frame.
+    std::unique_lock loadingLock(m_loadingMutex, std::defer_lock);
+    if (foregroundPreview) {
+        loadingLock.lock();
+    } else if (!loadingLock.try_lock()) {
+        return m_textureNull;
     }
 
+    if (const auto source = std::atomic_load_explicit(&textureData.source, std::memory_order_acquire))
+        return source;
+
+    if (m_loading.load(std::memory_order_acquire)) {
+        if (!foregroundPreview)
+            return m_textureNull;
+
+        m_loadingCondition.wait(loadingLock, [this] {
+            return !m_loading.load(std::memory_order_acquire);
+        });
+
+        if (const auto source = std::atomic_load_explicit(&textureData.source, std::memory_order_acquire))
+            return source;
+    }
+
+    m_loading.store(true, std::memory_order_release);
+    const bool async = g_app.isLoadingAsyncTexture() && !foregroundPreview;
+
+    if (!async) {
+        loadTexture(animationPhase);
+        m_loading.store(false, std::memory_order_release);
+        const auto result = std::atomic_load_explicit(&textureData.source, std::memory_order_acquire);
+        loadingLock.unlock();
+        m_loadingCondition.notify_all();
+        return result;
+    }
+
+    loadingLock.unlock();
+
+    auto action = [this] {
+        std::unique_lock loadingLock(m_loadingMutex);
+        for (int_fast8_t i = -1; ++i < m_animationPhases;)
+            loadTexture(i);
+        m_loading.store(false, std::memory_order_release);
+        loadingLock.unlock();
+        m_loadingCondition.notify_all();
+    };
+
+    g_asyncDispatcher.detach_task(std::move(action));
+
+    return m_textureNull;
+}
+
+TexturePtr ThingType::getDrawTexture(int& animationPhase)
+{
+    if (const auto texture = getTexture(animationPhase))
+        return texture;
+
+    // A ready frame is better than a blank one while the requested phase is decoded. The
+    // requested phase stays queued and replaces this fallback as soon as it is built.
+    for (int phase = 0; phase < static_cast<int>(m_textureData.size()); ++phase) {
+        if (const auto source = std::atomic_load_explicit(&m_textureData[phase].source, std::memory_order_acquire)) {
+            animationPhase = phase;
+            return source;
+        }
+    }
     return m_textureNull;
 }
 
 void ThingType::loadTexture(const int animationPhase)
 {
     auto& textureData = m_textureData[animationPhase];
-    if (textureData.source)
+    if (std::atomic_load_explicit(&textureData.source, std::memory_order_acquire))
         return;
 
     // we don't need layers in common items, they will be pre-drawn
@@ -1024,8 +1077,9 @@ void ThingType::loadTexture(const int animationPhase)
     //     calls addTexture() again - such a texture draws from the source for the rest of its life.
     // Each of these four points alone is enough for graphics to vanish once the source is freed,
     // and the overriding requirement is "the client must look the same". So it stays as it was.
-    textureData.source = std::make_shared<Texture>(fullImage, false, false);
-    textureData.source->allowAtlasCache();
+    auto source = std::make_shared<Texture>(fullImage, false, false);
+    source->allowAtlasCache();
+    std::atomic_store_explicit(&textureData.source, std::move(source), std::memory_order_release);
 }
 
 Size ThingType::getBestTextureDimension(int w, int h, const int count)

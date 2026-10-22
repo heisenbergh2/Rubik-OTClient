@@ -1189,14 +1189,17 @@ local function computeExpectedNumLines(layout, container)
 end
 
 local function applyDefaultContentHeightForWindow(containerWindow, layout, cellSize, container)
-	local minRows = 1
+	-- Sparse backpacks/depot pages should still open at a usable height.
+	-- Explicitly saved sizes remain authoritative in applyContainerHeight.
+	local minRows = math.min(3, computeExpectedNumLines(layout, container))
 
 	if modules.client_options.getOption("openMaximized") then
 		local numLines = math.max(computeExpectedNumLines(layout, container), minRows)
 
 		containerWindow:setContentHeight(cellSize.height * numLines)
 	else
-		local filledLines = math.max(math.ceil(container:getItemsCount() / layout:getNumColumns()), minRows)
+		local columns = math.max(1, layout:getNumColumns())
+		local filledLines = math.max(math.ceil(container:getItemsCount() / columns), minRows)
 
 		containerWindow:setContentHeight(filledLines * cellSize.height)
 	end

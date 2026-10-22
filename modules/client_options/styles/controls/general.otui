@@ -403,3 +403,22 @@ UIWidget
       anchors.verticalCenter: parent.verticalCenter
       margin-right: 1
       !tooltip: tr("Automatically detects when to perform diagonal movement\nbased on the combination of keys being pressed. This can\nmake movement feel smoother and more responsive, especially\nwhen changing directions quickly.")
+
+  OnePixelDownFrame
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.top: prev.bottom
+    margin-top: 7
+    height: 22
+
+    OptionCheckBox
+      id: dashWalking
+      !text: tr('Enable dash walking')
+
+    UIWidget
+      image-source: /images/icons/show_gui_help_grey
+      size: 12 12
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      margin-right: 1
+      !tooltip: tr("Allows one extra predicted step while walking. This can make\nfast characters feel more responsive, but depends on a stable connection.")

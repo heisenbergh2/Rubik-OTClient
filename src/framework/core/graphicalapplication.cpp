@@ -21,6 +21,7 @@
  */
 
 #include "graphicalapplication.h"
+#include <atomic>
 #include <exception>
 #include <framework/graphics/glutil.h>
 
@@ -185,7 +186,9 @@ bool GraphicalApplication::canDrawMap() const {
     if (!m_drawEvents->canDraw(MAP))
         return false;
 
-    static constexpr std::array<DrawPoolType, 3> types{ MAP, LIGHT, FOREGROUND_MAP };
+    // Map-attached widgets repaint the foreground UI. Wait for all dependent
+    // pools before another map frame starts.
+    static constexpr std::array<DrawPoolType, 5> types{ MAP, LIGHT, FOREGROUND_MAP, CREATURE_INFORMATION, FOREGROUND };
 
     for (DrawPoolType type : types) {
         if (g_drawPool.isDrawing(type))
@@ -221,7 +224,10 @@ void GraphicalApplication::run()
     };
 #endif
     // THREAD - POOL & MAP
-    const auto& mapThread = g_asyncDispatcher.submit_task([this] {
+    // Worker -> render pacing: bumped once per produced map frame. The render
+    // thread waits for it, so it never presents the same map frame twice.
+    std::atomic<uint32_t> mapFrameSeq{ 0 };
+    const auto& mapThread = g_asyncDispatcher.submit_task([this, &mapFrameSeq] {
         BS::multi_future<void> tasks;
 
         g_luaThreadId = g_eventThreadId = stdext::getThreadId();
@@ -274,6 +280,8 @@ void GraphicalApplication::run()
                     // wait() only synchronizes; get() also reports worker failures.
                     tasks.get();
                     tasks.clear();
+
+                    mapFrameSeq.fetch_add(1, std::memory_order_relaxed);
                 } else if (canDrawForeground) {
                     phase = "foreground UI drawing";
                     AUTO_STAT(STATS_RENDER, "DrawForegroundUI");
@@ -297,12 +305,35 @@ void GraphicalApplication::run()
     emscripten_set_main_loop(([] { g_app.mainLoop(); }), 0, 1);
 #else
     m_running = true;
+    uint32_t lastMapFrameSeq = 0;
     while (!m_stopping) {
         mainPoll();
 
         if (!g_window.isVisible()) {
             stdext::millisleep(10);
             continue;
+        }
+
+        // Legacy pacing: one presented frame per produced map frame. Without this the render
+        // loop spins blitting the same map frame over and over, which with vsync off shows as
+        // tearing/flicker on the moving map. A pending publish always wins over the wait:
+        // canDrawMap() also waits for FOREGROUND, so waiting here with an unconsumed publish
+        // deadlocks worker and render against each other.
+        bool hasPendingPublish = false;
+        for (uint8_t i = 0; i < static_cast<uint8_t>(DrawPoolType::LAST); ++i) {
+            if (g_drawPool.isDrawing(static_cast<DrawPoolType>(i))) {
+                hasPendingPublish = true;
+                break;
+            }
+        }
+
+        if (!hasPendingPublish && m_drawEvents && m_drawEvents->isOnline()) {
+            const auto seq = mapFrameSeq.load(std::memory_order_relaxed);
+            if (seq == lastMapFrameSeq) {
+                stdext::millisleep(1);
+                continue;
+            }
+            lastMapFrameSeq = seq;
         }
 
 #ifdef WIN32

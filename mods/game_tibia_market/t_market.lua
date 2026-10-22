@@ -1,6 +1,7 @@
 ﻿-- chunkname: @/mods/game_tibia_market/t_market.lua
 
 marketWindow = nil
+local marketSessionReady = false
 
 local marketItems = {}
 local allMarketItems = {}
@@ -853,6 +854,7 @@ function onMarketLeave()
 end
 
 function hide()
+	marketSessionReady = false
 	resetMarketViewState()
 	resetMarketPreviewPanel()
 	clearMarketWidgetRefs()
@@ -1591,9 +1593,19 @@ function resetMyOffersPanelView()
 end
 
 function onMarketEnter(offerCount, items)
-	configureList()
-
 	depotLockerItems = items
+
+	-- Balance/depot updates can repeat MarketEnter while browsing. Do not
+	-- rebuild filters or detach the virtual list's scrollbar in that case.
+	if marketWindow:isVisible() and marketSessionReady then
+		if not table.empty(lastSelectedItem) then
+			refreshSelectedItemDepotDisplay()
+		end
+		requestMarketGoldRefresh()
+		return
+	end
+
+	configureList()
 
 	marketWindow.contentPanel.category:destroyChildren()
 
@@ -1636,17 +1648,8 @@ function onMarketEnter(offerCount, items)
 		onSelectChildCategory(self, selected)
 	end
 
-	if marketWindow:isVisible() then
-		if not table.empty(lastSelectedItem) then
-			refreshSelectedItemDepotDisplay()
-		end
-
-		requestMarketGoldRefresh()
-
-		return
-	end
-
 	show()
+	marketSessionReady = true
 	marketWindow:focus()
 	requestMarketGoldRefresh()
 end
@@ -2334,7 +2337,7 @@ function onSelectChildItem(widget, selected, oldFocus)
 	lastSelectedItem = {
 		itemId = itemID,
 		tier = itemTier,
-		lastWidget = widget
+		lastWidget = selected
 	}
 
 	local selCount

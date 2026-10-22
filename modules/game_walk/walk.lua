@@ -35,6 +35,12 @@ local function getKeyboardDelay()
 	return math.max(tonumber(g_settings.getNumber("hotkeyDelay")) or DEFAULT_KEYBOARD_DELAY_MS, 0)
 end
 
+-- Dash only allows one additional locally predicted step. Packets and
+-- collision validation remain unchanged and authoritative on the server.
+local function isDashWalkingEnabled()
+	return modules.client_options and modules.client_options.getOption("dashWalking") and g_game.getFeature(GameAllowPreWalk)
+end
+
 local function hasPhysicallyPressedWalkKey()
 	local hasPressedKey = false
 
@@ -108,7 +114,7 @@ local function restartWalkRepeatDelay()
 		walkRepeatActive = true
 
 		continueWalk(0)
-	end, getKeyboardDelay())
+	end, isDashWalkingEnabled() and 50 or getKeyboardDelay())
 end
 
 local DIAGONAL_MAP = {
@@ -455,7 +461,7 @@ local function walk(dir)
 
 	local isAutoWalking = player:isAutoWalking()
 
-	if isAutoWalking or player:isServerWalking() then
+	if isAutoWalking or (player:isServerWalking() and not isDashWalkingEnabled()) then
 		g_game.stop()
 
 		if isAutoWalking then
@@ -487,7 +493,7 @@ local function walk(dir)
 			if not canChangeFloor(toPos, 1) and not canChangeFloor(toPos, -1) then
 				return false
 			end
-		else
+		elseif not player:isWalking() then
 			player:preWalk(dir)
 		end
 	end
@@ -527,12 +533,12 @@ function continueWalk(delay)
 			return
 		end
 
-		if player:isWalking() then
+		if player:isWalking() and not isDashWalkingEnabled() then
 			return
 		end
 
 		if not walk(smartWalkDir) then
-			continueWalk(10)
+			continueWalk(isDashWalkingEnabled() and 50 or 10)
 		end
 	end, delay or 0)
 end

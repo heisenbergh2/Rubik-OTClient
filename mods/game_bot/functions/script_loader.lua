@@ -28,12 +28,12 @@ context.loadScript = function(path, onLoadCallback)
 end
 
 context.loadRemoteScript = function(url, onLoadCallback)
-  if type(url) ~= 'string' or url:lower():find("http") ~= 1 then
-    return context.error("Invalid url for loadRemoteScript: " .. tostring(url))
+  if type(url) ~= 'string' or url:lower():find("https://", 1, true) ~= 1 then
+    return context.error("Remote scripts require an HTTPS url: " .. tostring(url))
   end
 
   HTTP.get(url, function(data, err)
-    if err or data:len() == 0 then
+    if err or type(data) ~= 'string' or data:len() == 0 then
       -- try to load from cache
       if type(context.storage.scriptsCache) ~= 'table' then
         context.storage.scriptsCache = {}
@@ -42,7 +42,7 @@ context.loadRemoteScript = function(url, onLoadCallback)
       if cache and type(cache) == 'string' and cache:len() > 0 then
         data = cache
       else
-        return context.error("Can't load script from: " .. url .. ", error: " .. err)
+        return context.error("Can't load script from: " .. url .. ", error: " .. tostring(err or "empty response"))
       end
     end
 

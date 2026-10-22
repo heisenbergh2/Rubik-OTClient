@@ -1299,7 +1299,7 @@ void Map::updateAttachedWidgets(const MapViewPtr& mapView)
     if (m_attachedObjectWidgetMap.empty())
         return;
 
-    g_drawPool.select(DrawPoolType::MAP);
+    bool shouldRepaint = false;
     for (const auto& [widget, object] : m_attachedObjectWidgetMap) {
         if (widget->isDestroyed()) {
             continue;
@@ -1358,7 +1358,14 @@ void Map::updateAttachedWidgets(const MapViewPtr& mapView)
 
         widget->disableUpdateTemporarily();
         widget->setRect(newWidgetRect);
+        shouldRepaint = true;
     }
+
+    // Attached map widgets are foreground UI. Repaint only when one moved so
+    // the map and UI stay synchronized without redrawing the whole UI every
+    // map-thread iteration.
+    if (shouldRepaint)
+        g_drawPool.repaint(DrawPoolType::FOREGROUND);
 }
 
 std::map<std::string, std::tuple<int, int, int, std::string>> Map::findEveryPath(const Position& start, int maxDistance, const std::map<std::string, std::string>& params)
