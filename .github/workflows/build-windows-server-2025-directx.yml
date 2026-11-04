@@ -90,8 +90,23 @@ jobs:
           "Visual Studio: $installationPath"
           "MSVC toolset: $toolsetVersion"
 
+      - name: Install DirectX manifest dependencies explicitly
+        id: dependencies
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $installRoot = Join-Path $env:GITHUB_WORKSPACE 'vcpkg_installed'
+          & "$env:VCPKG_ROOT\vcpkg.exe" install `
+            --triplet x64-windows-static `
+            "--x-manifest-root=$env:GITHUB_WORKSPACE" `
+            "--x-install-root=$installRoot" `
+            --x-feature=directx
+
+          exit $LASTEXITCODE
+
       - name: Build DirectX Release x64 with static runtime
         id: compile
+        if: ${{ steps.dependencies.outcome == 'success' }}
         continue-on-error: true
         shell: pwsh
         run: |
@@ -104,10 +119,9 @@ jobs:
             /m:2 `
             /p:Configuration=DirectX `
             /p:Platform=x64 `
-            /p:VcpkgEnableManifest=true `
+            /p:VcpkgEnableManifest=false `
             /p:VcpkgRoot="$env:VCPKG_ROOT" `
-            /p:VcpkgManifestRoot="$env:GITHUB_WORKSPACE" `
-            /p:VcpkgManifestFeatures=directx `
+            /p:VcpkgInstalledDir="$env:GITHUB_WORKSPACE\vcpkg_installed\" `
             /p:VcpkgTriplet=x64-windows-static `
             /p:OutDir="$outDir\" `
             /p:GITHUB_WORKSPACE="$env:GITHUB_WORKSPACE" `
@@ -248,12 +262,13 @@ jobs:
         if: ${{ always() }}
         shell: pwsh
         run: |
+          $dependencies = '${{ steps.dependencies.outcome }}'
           $compile = '${{ steps.compile.outcome }}'
           $package = '${{ steps.package.outcome }}'
           $validate = '${{ steps.validate.outcome }}'
 
-          if ($compile -ne 'success' -or $package -ne 'success' -or $validate -ne 'success') {
-            throw "DirectX package was not produced. compile=$compile package=$package validate=$validate. Download the diagnostics artifact for details."
+          if ($dependencies -ne 'success' -or $compile -ne 'success' -or $package -ne 'success' -or $validate -ne 'success') {
+            throw "DirectX package was not produced. dependencies=$dependencies compile=$compile package=$package validate=$validate. Download the diagnostics artifact for details."
           }
 
           'DirectX x64 package built and validated successfully.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
