@@ -151,11 +151,16 @@ jobs:
           $stage = Join-Path $env:GITHUB_WORKSPACE 'artifacts/windows-server-2025-directx'
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          $exe = Get-ChildItem -LiteralPath $buildRoot -Filter otclient.exe -File -Recurse |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
+          $exeCandidates = @(
+            (Join-Path $buildRoot 'bin/RubikOTC.exe')
+            (Join-Path $buildRoot 'bin/otclient.exe')
+          )
+          $exe = $exeCandidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1 |
+            ForEach-Object { Get-Item -LiteralPath $_ }
           if (-not $exe) {
-            throw "otclient.exe was not found below $buildRoot."
+            throw "RubikOTC.exe was not found in the expected output directory below $buildRoot."
           }
 
           $packagedExe = Join-Path $stage 'RubikOTC-DirectX-x64.exe'
