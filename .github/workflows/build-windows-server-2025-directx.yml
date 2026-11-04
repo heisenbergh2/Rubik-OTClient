@@ -1,0 +1,259 @@
+name: Build - Windows Server 2025 DirectX
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/windows-server-2025-directx
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 2
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite"
+
+jobs:
+  build-directx:
+    name: DirectX x64 static on Windows Server 2025
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 240
+
+    concurrency:
+      group: rubikotc-windows-server-2025-directx-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Read and validate vcpkg baseline
+        id: baseline
+        shell: pwsh
+        run: |
+          $json = Get-Content vcpkg.json -Raw | ConvertFrom-Json
+          $commit = $json.'builtin-baseline'
+          if ($commit -notmatch '^[0-9a-f]{40}$') {
+            throw 'vcpkg builtin-baseline must be a full 40-character commit SHA.'
+          }
+
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          New-Item -ItemType Directory -Force -Path .vcpkg-binary-cache | Out-Null
+
+      - name: Restore compiled vcpkg dependencies
+        id: vcpkg-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg-binary-cache
+            ${{ github.workspace }}/vcpkg/downloads
+          key: vcpkg-windows-server-2025-directx-x64-static-${{ hashFiles('vcpkg.json') }}-v1
+          restore-keys: |
+            vcpkg-windows-server-2025-directx-x64-static-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-windows-x64-static-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-windows-x64-static-
+
+      - name: Install pinned vcpkg
+        uses: lukka/run-vcpkg@a400452f634fe49e9f18d388aeb1809dcc642136
+        with:
+          vcpkgDirectory: ${{ github.workspace }}/vcpkg
+          vcpkgGitCommitId: ${{ steps.baseline.outputs.commit }}
+          vcpkgJsonGlob: vcpkg.json
+
+      - name: Set up Visual Studio 2026 MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          vs-prerelease: true
+          vs-version: "[18.0,19.0)"
+
+      - name: Verify Windows Server 2025 and MSVC v145
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          if ($os.Caption -notmatch 'Windows Server 2025') {
+            throw "Expected Windows Server 2025 runner; found '$($os.Caption)'."
+          }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installationPath = & $vswhere -latest -prerelease -products '*' -version '[18.0,19.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ([string]::IsNullOrWhiteSpace($installationPath)) {
+            throw 'Visual Studio 2026 with the native C++ toolset was not found.'
+          }
+
+          $versionFile = Join-Path $installationPath 'VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt'
+          $toolsetVersion = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+          if ($toolsetVersion -notmatch '^14\.5') {
+            throw "The DirectX solution requires MSVC v145 (14.5x); found $toolsetVersion."
+          }
+
+          "Windows runner: $($os.Caption) $($os.Version)"
+          "Visual Studio: $installationPath"
+          "MSVC toolset: $toolsetVersion"
+
+      - name: Build DirectX Release x64 with static runtime
+        id: compile
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $buildRoot = Join-Path $env:GITHUB_WORKSPACE 'build/windows-server-2025-directx'
+          $outDir = Join-Path $buildRoot 'bin'
+          $log = Join-Path $buildRoot 'msbuild.log'
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+
+          & msbuild.exe vc18/otclient.sln `
+            /m:2 `
+            /p:Configuration=DirectX `
+            /p:Platform=x64 `
+            /p:VcpkgEnableManifest=true `
+            /p:VcpkgRoot="$env:VCPKG_ROOT" `
+            /p:VcpkgManifestRoot="$env:GITHUB_WORKSPACE" `
+            /p:VcpkgManifestFeatures=directx `
+            /p:VcpkgTriplet=x64-windows-static `
+            /p:OutDir="$outDir\" `
+            /p:GITHUB_WORKSPACE="$env:GITHUB_WORKSPACE" `
+            /bl:"$buildRoot/msbuild.binlog" `
+            /fl `
+            "/flp:logfile=$log;verbosity=diagnostic" *>&1 | Tee-Object -FilePath "$buildRoot/msbuild-console.log"
+
+          exit $LASTEXITCODE
+
+      - name: Save completed vcpkg work
+        if: ${{ always() && steps.baseline.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ github.workspace }}/.vcpkg-binary-cache
+            ${{ github.workspace }}/vcpkg/downloads
+          key: vcpkg-windows-server-2025-directx-x64-static-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Stage executable and runtime files
+        id: package
+        if: ${{ steps.compile.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $buildRoot = Join-Path $env:GITHUB_WORKSPACE 'build/windows-server-2025-directx'
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'artifacts/windows-server-2025-directx'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $exe = Get-ChildItem -LiteralPath $buildRoot -Filter otclient.exe -File -Recurse |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $exe) {
+            throw "otclient.exe was not found below $buildRoot."
+          }
+
+          $packagedExe = Join-Path $stage 'RubikOTC-DirectX-x64.exe'
+          Copy-Item -LiteralPath $exe.FullName -Destination $packagedExe
+
+          Get-ChildItem -LiteralPath $exe.DirectoryName -File |
+            Where-Object { $_.Extension -ieq '.dll' } |
+            Copy-Item -Destination $stage
+
+          $metadata = @(
+            "Source commit: $env:GITHUB_SHA"
+            "Workflow run: $env:GITHUB_RUN_ID"
+            'Configuration: DirectX|x64'
+            'Runner: windows-2025-vs2026'
+            'Triplet: x64-windows-static'
+            'MSVC runtime: MultiThreaded (/MT)'
+          )
+          $metadata | Set-Content -LiteralPath (Join-Path $stage 'build-info.txt') -Encoding utf8
+
+      - name: Validate PE, mitigations, runtime and renderer imports
+        id: validate
+        if: ${{ steps.package.outcome == 'success' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'artifacts/windows-server-2025-directx'
+          $exe = Join-Path $stage 'RubikOTC-DirectX-x64.exe'
+
+          $headers = @(& dumpbin.exe /nologo /headers $exe)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dumpbin failed while reading PE headers.'
+          }
+          $headers | Set-Content -LiteralPath (Join-Path $stage 'pe-headers.txt') -Encoding utf8
+          $headerText = $headers -join "`n"
+
+          if ($headerText -notmatch '(?i)machine \(x64\)') {
+            throw 'Packaged executable is not an x64 PE image.'
+          }
+          if ($headerText -notmatch '(?i)subsystem \(Windows GUI\)') {
+            throw 'Packaged executable is not using the Windows GUI subsystem.'
+          }
+          foreach ($mitigation in @('Dynamic base', 'NX compatible', 'High Entropy Virtual Addresses')) {
+            if ($headerText -notmatch [regex]::Escape($mitigation)) {
+              throw "Required PE mitigation is missing: $mitigation"
+            }
+          }
+
+          $imports = @(& dumpbin.exe /nologo /dependents $exe)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dumpbin failed while checking executable dependencies.'
+          }
+          $imports | Set-Content -LiteralPath (Join-Path $stage 'dependencies.txt') -Encoding utf8
+
+          $dynamicRuntime = @($imports | Where-Object { $_ -match '(?i)(vcruntime|msvcp|concrt)[0-9_]*\.dll' })
+          if ($dynamicRuntime.Count -gt 0) {
+            throw "Dynamic MSVC runtime was imported: $($dynamicRuntime -join ', ')"
+          }
+
+          $directXImports = @($imports | Where-Object { $_ -match '(?i)(d3d9|d3d11|dxgi)\.dll' })
+          if ($directXImports.Count -eq 0) {
+            throw 'No Direct3D/DXGI dependency was found in the executable imports.'
+          }
+
+          $thirdPartyImports = @($imports | ForEach-Object {
+            if ($_ -match '(?i)^\s*([a-z0-9_.+-]+\.dll)\s*$') { $matches[1] }
+          } | Where-Object { $_ -match '(?i)^(libEGL|libGLESv2|glew32|openal32|lua.*|libcrypto.*|libssl.*|zlib.*)\.dll$' })
+          foreach ($dependency in $thirdPartyImports) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stage $dependency))) {
+              throw "Required third-party runtime file was not packaged: $dependency"
+            }
+          }
+
+          $hash = Get-FileHash -LiteralPath $exe -Algorithm SHA256
+          "$($hash.Hash)  $($hash.Path | Split-Path -Leaf)" |
+            Set-Content -LiteralPath (Join-Path $stage 'SHA256SUMS.txt') -Encoding ascii
+
+          "DirectX imports: $($directXImports.Trim() -join ', ')" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          "SHA-256: $($hash.Hash)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Upload usable DirectX package
+        if: ${{ steps.validate.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: RubikOTC-windows-server-2025-directx-x64
+          retention-days: 30
+          if-no-files-found: error
+          path: ${{ github.workspace }}/artifacts/windows-server-2025-directx
+
+      - name: Upload DirectX build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: RubikOTC-windows-server-2025-directx-diagnostics
+          retention-days: 30
+          if-no-files-found: ignore
+          path: |
+            ${{ github.workspace }}/build/windows-server-2025-directx/msbuild.log
+            ${{ github.workspace }}/build/windows-server-2025-directx/msbuild-console.log
+            ${{ github.workspace }}/build/windows-server-2025-directx/msbuild.binlog
+            ${{ github.workspace }}/vcpkg/buildtrees/**/*.log
+            ${{ github.workspace }}/artifacts/windows-server-2025-directx/pe-headers.txt
+            ${{ github.workspace }}/artifacts/windows-server-2025-directx/dependencies.txt
+
+      - name: Report final result
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $compile = '${{ steps.compile.outcome }}'
+          $package = '${{ steps.package.outcome }}'
+          $validate = '${{ steps.validate.outcome }}'
+
+          if ($compile -ne 'success' -or $package -ne 'success' -or $validate -ne 'success') {
+            throw "DirectX package was not produced. compile=$compile package=$package validate=$validate. Download the diagnostics artifact for details."
+          }
+
+          'DirectX x64 package built and validated successfully.' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
