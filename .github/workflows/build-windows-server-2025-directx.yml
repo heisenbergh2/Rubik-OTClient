@@ -66,6 +66,11 @@ jobs:
           vs-prerelease: true
           vs-version: "[18.0,19.0)"
 
+      - name: Set up MSVC developer command environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Verify Windows Server 2025 and MSVC v145
         shell: pwsh
         run: |
