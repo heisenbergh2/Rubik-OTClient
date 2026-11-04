@@ -123,6 +123,7 @@ jobs:
             /p:VcpkgRoot="$env:VCPKG_ROOT" `
             /p:VcpkgInstalledDir="$env:GITHUB_WORKSPACE\vcpkg_installed\" `
             /p:VcpkgTriplet=x64-windows-static `
+            /p:RunProtoCompile=true `
             /p:OutDir="$outDir\" `
             /p:GITHUB_WORKSPACE="$env:GITHUB_WORKSPACE" `
             /bl:"$buildRoot/msbuild.binlog" `
